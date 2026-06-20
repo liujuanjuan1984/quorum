@@ -157,6 +157,21 @@ func (p *SnowmanProducer) AddBlock(block *quorumpb.Block) error {
 	if p.engine == nil {
 		return errors.New("snowman engine is not initialized")
 	}
+	if block.BlockId > 0 {
+		parentExists, err := nodectx.GetNodeCtx().GetChainStorage().IsBlockExist(block.GroupId, block.ParentBlockId, false, p.nodename)
+		if err != nil || !parentExists {
+			if err := nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(block, snowman.Processing.String(), p.nodename); err != nil {
+				return err
+			}
+			return p.requestAncestors(block)
+		}
+	}
+	blockID := snowman.BlockID(block)
+	if status, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockStatus(block.GroupId, blockID, p.nodename); err != nil || status != snowman.Accepted.String() {
+		if err := nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(block, snowman.Processing.String(), p.nodename); err != nil {
+			return err
+		}
+	}
 	if err := p.engine.IssueBlock(block); err != nil {
 		return err
 	}
@@ -166,30 +181,46 @@ func (p *SnowmanProducer) AddBlock(block *quorumpb.Block) error {
 	return nil
 }
 
-func (p *SnowmanProducer) HandleMessage(msg *snowman.WireMessage) error {
+func (p *SnowmanProducer) HandleMessage(msg *quorumpb.SnowmanMessage) error {
 	if msg == nil {
 		return nil
 	}
-	if msg.GroupID != p.groupId {
+	if msg.GroupId != p.groupId {
 		return nil
 	}
+	if !p.engine.IsValidator(msg.SenderPubkey) {
+		return errors.New("snowman message sender is not an active validator")
+	}
+	if err := snowman.VerifyMessageSignature(msg); err != nil {
+		return err
+	}
 	switch msg.Type {
-	case snowman.MessagePutBlock:
+	case quorumpb.SnowmanMessageType_PUT_BLOCK:
 		return p.AddBlock(msg.Block)
-	case snowman.MessagePushQuery:
+	case quorumpb.SnowmanMessageType_GET_BLOCK:
+		return p.sendBlock(msg.RequestId, msg.BlockId)
+	case quorumpb.SnowmanMessageType_GET_ANCESTORS:
+		return p.sendAncestors(msg.RequestId, msg.BlockId)
+	case quorumpb.SnowmanMessageType_ANCESTORS:
+		return p.handleAncestors(msg.Blocks)
+	case quorumpb.SnowmanMessageType_PUSH_QUERY:
 		if msg.Block != nil {
 			if err := p.AddBlock(msg.Block); err != nil {
 				return err
 			}
 		}
-		return p.sendChits(msg.RequestID)
-	case snowman.MessagePullQuery:
-		return p.sendChits(msg.RequestID)
-	case snowman.MessageChits:
-		return p.engine.RecordVote(msg.RequestID, msg.SenderPubkey, msg.PreferenceID)
-	case snowman.MessageGetAcceptedFrontier:
-		return p.sendAcceptedFrontier(msg.RequestID)
-	case snowman.MessageAcceptedFrontier:
+		return p.sendChits(msg.RequestId)
+	case quorumpb.SnowmanMessageType_PULL_QUERY:
+		return p.sendChits(msg.RequestId)
+	case quorumpb.SnowmanMessageType_CHITS:
+		return p.engine.RecordVote(msg.RequestId, msg.SenderPubkey, msg.PreferenceId)
+	case quorumpb.SnowmanMessageType_GET_ACCEPTED_FRONTIER:
+		return p.sendAcceptedFrontier(msg.RequestId)
+	case quorumpb.SnowmanMessageType_ACCEPTED_FRONTIER:
+		return nil
+	case quorumpb.SnowmanMessageType_GET_ACCEPTED:
+		return p.sendAccepted(msg.RequestId, msg.BlockIds)
+	case quorumpb.SnowmanMessageType_ACCEPTED:
 		return nil
 	default:
 		return nil
@@ -298,17 +329,14 @@ func (p *SnowmanProducer) startPoll(block *quorumpb.Block) error {
 	if err != nil {
 		return err
 	}
-	msg := snowman.NewWireMessage(p.groupId, snowman.MessagePushQuery, requestID, p.grpItem.UserSignPubkey)
-	msg.BlockID = snowman.BlockID(block)
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_PUSH_QUERY, requestID, p.grpItem.UserSignPubkey)
+	msg.BlockId = snowman.BlockID(block)
 	msg.Block = block
-	data, err := msg.Marshal()
-	if err != nil {
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
 	}
-	if cmgr, err := conn.GetConn().GetConnMgr(p.groupId); err == nil {
-		if err := cmgr.BroadcastSnowmanMessage(data); err != nil {
-			return err
-		}
+	if err := p.broadcastMessage(msg); err != nil {
+		return err
 	}
 	// Count the local validator's own preference when it was sampled.
 	if poll.Sampled[p.grpItem.UserSignPubkey] {
@@ -318,41 +346,121 @@ func (p *SnowmanProducer) startPoll(block *quorumpb.Block) error {
 }
 
 func (p *SnowmanProducer) sendChits(requestID string) error {
-	msg := snowman.NewWireMessage(p.groupId, snowman.MessageChits, requestID, p.grpItem.UserSignPubkey)
-	msg.PreferenceID = p.engine.Chits()
-	data, err := msg.Marshal()
-	if err != nil {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_CHITS, requestID, p.grpItem.UserSignPubkey)
+	msg.PreferenceId = p.engine.Chits()
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
 	}
-	if cmgr, err := conn.GetConn().GetConnMgr(p.groupId); err == nil {
-		return cmgr.BroadcastSnowmanMessage(data)
-	}
-	return nil
+	return p.broadcastMessage(msg)
 }
 
 func (p *SnowmanProducer) sendAcceptedFrontier(requestID string) error {
-	msg := snowman.NewWireMessage(p.groupId, snowman.MessageAcceptedFrontier, requestID, p.grpItem.UserSignPubkey)
-	msg.PreferenceID = p.engine.LastAccepted()
-	data, err := msg.Marshal()
-	if err != nil {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_ACCEPTED_FRONTIER, requestID, p.grpItem.UserSignPubkey)
+	msg.PreferenceId = p.engine.LastAccepted()
+	if msg.PreferenceId != "" {
+		msg.BlockIds = []string{msg.PreferenceId}
+	}
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
 	}
-	if cmgr, err := conn.GetConn().GetConnMgr(p.groupId); err == nil {
-		return cmgr.BroadcastSnowmanMessage(data)
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) broadcastSnowmanBlock(block *quorumpb.Block) error {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_PUT_BLOCK, "", p.grpItem.UserSignPubkey)
+	msg.BlockId = snowman.BlockID(block)
+	msg.Block = block
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) requestAncestors(block *quorumpb.Block) error {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_ANCESTORS, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
+	msg.BlockId = snowman.ParentID(block)
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) sendBlock(requestID string, blockID string) error {
+	block, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockByHash(p.groupId, blockID, p.nodename)
+	if err != nil {
+		return nil
+	}
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_PUT_BLOCK, requestID, p.grpItem.UserSignPubkey)
+	msg.BlockId = blockID
+	msg.Block = block
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) sendAncestors(requestID string, blockID string) error {
+	blocks := p.collectAncestors(blockID, 32)
+	if len(blocks) == 0 {
+		return nil
+	}
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_ANCESTORS, requestID, p.grpItem.UserSignPubkey)
+	msg.BlockId = blockID
+	msg.Blocks = blocks
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) handleAncestors(blocks []*quorumpb.Block) error {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i] == nil {
+			continue
+		}
+		if err := p.AddBlock(blocks[i]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (p *SnowmanProducer) broadcastSnowmanBlock(block *quorumpb.Block) error {
-	msg := snowman.NewWireMessage(p.groupId, snowman.MessagePutBlock, "", p.grpItem.UserSignPubkey)
-	msg.BlockID = snowman.BlockID(block)
-	msg.Block = block
-	data, err := msg.Marshal()
-	if err != nil {
+func (p *SnowmanProducer) sendAccepted(requestID string, blockIDs []string) error {
+	accepted := make([]string, 0, len(blockIDs))
+	for _, blockID := range blockIDs {
+		status, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockStatus(p.groupId, blockID, p.nodename)
+		if err == nil && status == snowman.Accepted.String() {
+			accepted = append(accepted, blockID)
+		}
+	}
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_ACCEPTED, requestID, p.grpItem.UserSignPubkey)
+	msg.BlockIds = accepted
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
 	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) collectAncestors(blockID string, limit int) []*quorumpb.Block {
+	if limit <= 0 {
+		return nil
+	}
+	blocks := []*quorumpb.Block{}
+	currentID := blockID
+	for currentID != "" && len(blocks) < limit {
+		block, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockByHash(p.groupId, currentID, p.nodename)
+		if err != nil {
+			break
+		}
+		blocks = append(blocks, block)
+		currentID = snowman.ParentID(block)
+	}
+	return blocks
+}
+
+func (p *SnowmanProducer) broadcastMessage(msg *quorumpb.SnowmanMessage) error {
 	if cmgr, err := conn.GetConn().GetConnMgr(p.groupId); err == nil {
-		return cmgr.BroadcastSnowmanMessage(data)
+		return cmgr.BroadcastSnowmanMessage(msg)
 	}
 	return nil
 }

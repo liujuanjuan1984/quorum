@@ -50,7 +50,7 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 		//check if pubkey in producer list are unique
 		bundle := make(map[string]bool)
 
-		validatorBundle := &quorumpb.BFTProducerBundleItem{}
+		validatorBundle := &quorumpb.ValidatorBundleItem{}
 		producers := []*quorumpb.ProducerItem{}
 
 		for _, producerPubkey := range params.ProducerPubkey {

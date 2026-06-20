@@ -257,10 +257,14 @@ func (connMgr *ConnMgr) SendRespTrxRex(trx *quorumpb.Trx, s network.Stream) erro
 	return nodectx.GetNodeCtx().Node.RumExchange.PublishToStream(rummsg, s) //publish to a stream
 }
 
-func (connMgr *ConnMgr) BroadcastSnowmanMessage(data []byte) error {
+func (connMgr *ConnMgr) BroadcastSnowmanMessage(msg *quorumpb.SnowmanMessage) error {
+	pbBytes, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
 	pkg := &quorumpb.Package{
-		Type: quorumpb.PackageType_HBB,
-		Data: data,
+		Type: quorumpb.PackageType_SNOWMAN,
+		Data: pbBytes,
 	}
 
 	pkgBytes, err := proto.Marshal(pkg)

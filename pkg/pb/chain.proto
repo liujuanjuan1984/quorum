@@ -5,7 +5,7 @@ option go_package = "github.com/rumsystem/quorum/pkg/pb";
 enum PackageType {
     TRX             = 0;
     BLOCK           = 1;
-    HBB             = 2;
+    SNOWMAN         = 2;
 }
 
 message Package {
@@ -70,7 +70,13 @@ message Block {
     bool        Sudo               = 7;    
     int64       TimeStamp          = 8;       
     bytes       BlockHash          = 9;
-    bytes       ProducerSign       = 10;        
+    bytes       ProducerSign       = 10;
+    uint64      ParentBlockId      = 11;
+    bytes       TrxRoot            = 12;
+    bytes       StateRoot          = 13;
+    uint64      ProducerSetVersion = 14;
+    uint32      ProposerIndex      = 15;
+    string      ProtocolVersion    = 16;
 }
 
 message ReqBlock {
@@ -117,10 +123,12 @@ message ProducerItem {
    int64      WithnessBlocks      = 6;
    int64      TimeStamp           = 7;       
    string     Memo                = 8;
+   uint64     EffectiveBlockId    = 9;
 }
 
-message BFTProducerBundleItem {
+message ValidatorBundleItem {
     repeated ProducerItem Producers = 1;
+    uint64 EffectiveBlockId = 2;
 }
 
 message UserItem {
@@ -252,88 +260,6 @@ message NodeSDKGroupItem {
     string    GroupSeed      = 5;
 }
 
-message HBTrxBundle {
-    repeated Trx Trxs = 1;
-}  
-
-message HBMsgv1 {
-    string           MsgId       = 1;   
-    uint64           Epoch       = 2;
-    HBMsgPayloadType PayloadType = 3;   // RBC or BBA
-    bytes            Payload     = 4; 
-}
-
-enum HBMsgPayloadType {
-    RBC = 0;    
-    BBA = 1;
-}
-
-// RBC
-message RBCMsg {
-    RBCMsgType Type    = 1;   //INIT_PROPOSE / PROOF / READY
-    bytes      Payload = 2;
-}
-
-enum RBCMsgType {
-    INIT_PROPOSE = 0;
-    ECHO         = 1;
-    READY        = 2;
-}
-
-message InitPropose {
-    bytes          RootHash         = 1;
-    repeated bytes Proof            = 2;
-    int64          Index            = 3;
-    int64          Leaves           = 4;
-    int64          OriginalDataSize = 5;    
-    string         RecvNodePubkey   = 6;    //producer which should handle this ecc data shard
-    string         ProposerPubkey   = 7;    //producer which make this propose (part of ecc shards)
-    bytes          ProposerSign     = 8;    //signature of producer made this propose
-}
-
-message Echo { 
-    bytes          RootHash               = 1;
-    repeated bytes Proof                  = 2;
-    int64          Index                  = 3;
-    int64          Leaves                 = 4;
-    int64          OriginalDataSize       = 5;   
-    string         OriginalProposerPubkey = 6;  //producer make this original input
-    string         EchoProviderPubkey     = 7;  //producer which broadcast this Echo
-    bytes          EchoProviderSign       = 8;  //signature of producer broadcast this Echo
-}
-
-message Ready {
-    bytes  RootHash               = 1;
-    string OriginalProposerPubkey = 2;
-    string ReadyProviderPubkey    = 3;
-    bytes  ReadyProviderSign      = 4;
-}
-
-// BBA
-message BBAMsg {
-    BBAMsgType Type       = 1; //BVAL or AUX
-    bytes      Payload    = 2;
-}
-
-enum BBAMsgType {
-    BVAL  = 0;
-    AUX   = 1;
-}
-
-message Bval {
-    string     ProposerId   = 1;
-    string     SenderPubkey = 2;
-    int64      Epoch        = 3;
-    bool       Value        = 4;
-}
-
-message Aux {
-    string     ProposerId   = 1;
-    string     SenderPubkey = 2;
-    uint64     Epoch        = 3;    
-    bool       Value        = 4;
-}
-
 //old proto msg
 message GroupItemV0 {
     string GroupId                 = 1;
@@ -351,5 +277,3 @@ message GroupItemV0 {
     string CipherKey               = 13;
     string AppKey                  = 14;
 }
-
-

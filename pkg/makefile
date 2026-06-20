@@ -1,12 +1,16 @@
 PROTOC_GEN_GO = $(GOPATH)/bin/protoc-gen-go
 PROTOC = $(shell which protoc)
 
-compile: chain.proto activity_stream.proto rumexchange.proto
+compile: chain.proto snowman.proto activity_stream.proto rumexchange.proto
 
 chain.proto:
 	protoc -I=pb --go_out=pb pb/chain.proto
 	mv pb/github.com/rumsystem/quorum/pkg/pb/chain.pb.go pb/chain.pb.go
 	sed -i 's/TimeStamp,omitempty/TimeStamp,omitempty,string/g' pb/chain.pb.go
+
+snowman.proto:
+	protoc -I=pb --go_out=pb pb/snowman.proto
+	mv pb/github.com/rumsystem/quorum/pkg/pb/snowman.pb.go pb/snowman.pb.go
 
 activity_stream.proto:
 	protoc -I=pb --go_out=pb pb/activity_stream.proto

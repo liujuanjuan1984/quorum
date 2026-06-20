@@ -1,0 +1,33 @@
+syntax = "proto3";
+package quorum.pb;
+option go_package = "github.com/rumsystem/quorum/pkg/pb";
+
+import "chain.proto";
+
+enum SnowmanMessageType {
+    PUT_BLOCK             = 0;
+    GET_BLOCK             = 1;
+    GET_ANCESTORS         = 2;
+    ANCESTORS             = 3;
+    PUSH_QUERY            = 4;
+    PULL_QUERY            = 5;
+    CHITS                 = 6;
+    GET_ACCEPTED_FRONTIER = 7;
+    ACCEPTED_FRONTIER     = 8;
+    GET_ACCEPTED          = 9;
+    ACCEPTED              = 10;
+}
+
+message SnowmanMessage {
+    string             GroupId      = 1;
+    SnowmanMessageType Type         = 2;
+    string             RequestId    = 3;
+    string             SenderPubkey = 4;
+    int64              Timestamp    = 5;
+    string             BlockId      = 6;
+    string             PreferenceId = 7;
+    Block              Block        = 8;
+    repeated Block     Blocks       = 9;
+    repeated string    BlockIds     = 10;
+    bytes              Signature    = 11;
+}

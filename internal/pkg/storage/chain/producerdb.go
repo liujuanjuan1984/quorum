@@ -42,7 +42,7 @@ func (cs *Storage) GetUpdProducerListTrx(groupId string, prefix ...string) (*quo
 }
 
 func (cs *Storage) UpdateProducer(groupId string, data []byte, prefix ...string) error {
-	item := &quorumpb.BFTProducerBundleItem{}
+	item := &quorumpb.ValidatorBundleItem{}
 	if err := proto.Unmarshal(data, item); err != nil {
 		return err
 	}

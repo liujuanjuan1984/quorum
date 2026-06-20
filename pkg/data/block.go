@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
@@ -16,15 +17,22 @@ import (
 )
 
 func CreateBlockByEthKey(parentBlk *quorumpb.Block, epoch uint64, trxs []*quorumpb.Trx, sudo bool, groupPublicKey string, keystore localcrypto.Keystore, keyalias string, opts ...string) (*quorumpb.Block, error) {
+	trxRoot, err := CalcTrxRoot(trxs)
+	if err != nil {
+		return nil, err
+	}
 	newBlock := &quorumpb.Block{
-		GroupId:        parentBlk.GroupId,
-		BlockId:        parentBlk.BlockId + 1,
-		Epoch:          epoch,
-		PrevHash:       parentBlk.BlockHash,
-		ProducerPubkey: groupPublicKey,
-		Trxs:           trxs,
-		Sudo:           sudo,
-		TimeStamp:      time.Now().UnixNano(),
+		GroupId:         parentBlk.GroupId,
+		BlockId:         parentBlk.BlockId + 1,
+		Epoch:           epoch,
+		PrevHash:        parentBlk.BlockHash,
+		ProducerPubkey:  groupPublicKey,
+		Trxs:            trxs,
+		Sudo:            sudo,
+		TimeStamp:       time.Now().UnixNano(),
+		ParentBlockId:   parentBlk.BlockId,
+		TrxRoot:         trxRoot,
+		ProtocolVersion: "snowman++",
 	}
 
 	tbytes, err := proto.Marshal(newBlock)
@@ -58,6 +66,13 @@ func CreateBlockByEthKey(parentBlk *quorumpb.Block, epoch uint64, trxs []*quorum
 func RegenrateBlockWithParent(parentBlock *quorumpb.Block, orphanBlock *quorumpb.Block, keystore localcrypto.Keystore, keyalias string, opts ...string) (*quorumpb.Block, error) {
 	orphanBlock.PrevHash = parentBlock.BlockHash
 	orphanBlock.BlockId = parentBlock.BlockId + 1
+	orphanBlock.ParentBlockId = parentBlock.BlockId
+	orphanBlock.ProtocolVersion = "snowman++"
+	trxRoot, err := CalcTrxRoot(orphanBlock.Trxs)
+	if err != nil {
+		return nil, err
+	}
+	orphanBlock.TrxRoot = trxRoot
 
 	tbytes, err := proto.Marshal(orphanBlock)
 	if err != nil {
@@ -87,15 +102,21 @@ func RegenrateBlockWithParent(parentBlock *quorumpb.Block, orphanBlock *quorumpb
 }
 
 func CreateGenesisBlockByEthKey(groupId string, groupPublicKey string, keystore localcrypto.Keystore, keyalias string) (*quorumpb.Block, error) {
+	trxRoot, err := CalcTrxRoot(nil)
+	if err != nil {
+		return nil, err
+	}
 	genesisBlock := &quorumpb.Block{
-		GroupId:        groupId,
-		BlockId:        0,
-		Epoch:          0,
-		PrevHash:       nil,
-		ProducerPubkey: groupPublicKey,
-		Trxs:           nil,
-		Sudo:           true,
-		TimeStamp:      time.Now().UnixNano(),
+		GroupId:         groupId,
+		BlockId:         0,
+		Epoch:           0,
+		PrevHash:        nil,
+		ProducerPubkey:  groupPublicKey,
+		Trxs:            nil,
+		Sudo:            true,
+		TimeStamp:       time.Now().UnixNano(),
+		TrxRoot:         trxRoot,
+		ProtocolVersion: "snowman++",
 	}
 
 	bbytes, err := proto.Marshal(genesisBlock)
@@ -127,16 +148,22 @@ func ValidBlockWithParent(newBlock, parentBlock *quorumpb.Block) (bool, error) {
 
 	//step 1, check hash for newBlock
 	blkWithOutHashAndSign := &quorumpb.Block{
-		GroupId:        newBlock.GroupId,
-		BlockId:        newBlock.BlockId,
-		Epoch:          newBlock.Epoch,
-		PrevHash:       newBlock.PrevHash,
-		ProducerPubkey: newBlock.ProducerPubkey,
-		Trxs:           newBlock.Trxs,
-		Sudo:           newBlock.Sudo,
-		TimeStamp:      newBlock.TimeStamp,
-		BlockHash:      nil,
-		ProducerSign:   nil,
+		GroupId:            newBlock.GroupId,
+		BlockId:            newBlock.BlockId,
+		Epoch:              newBlock.Epoch,
+		PrevHash:           newBlock.PrevHash,
+		ProducerPubkey:     newBlock.ProducerPubkey,
+		Trxs:               newBlock.Trxs,
+		Sudo:               newBlock.Sudo,
+		TimeStamp:          newBlock.TimeStamp,
+		BlockHash:          nil,
+		ProducerSign:       nil,
+		ParentBlockId:      newBlock.ParentBlockId,
+		TrxRoot:            newBlock.TrxRoot,
+		StateRoot:          newBlock.StateRoot,
+		ProducerSetVersion: newBlock.ProducerSetVersion,
+		ProposerIndex:      newBlock.ProposerIndex,
+		ProtocolVersion:    newBlock.ProtocolVersion,
 	}
 
 	tbytes, err := proto.Marshal(blkWithOutHashAndSign)
@@ -156,6 +183,19 @@ func ValidBlockWithParent(newBlock, parentBlock *quorumpb.Block) (bool, error) {
 
 	if !bytes.Equal(newBlock.PrevHash, parentBlock.BlockHash) {
 		return false, errors.New("prevhash mismatch with parent block")
+	}
+	if newBlock.ParentBlockId != parentBlock.BlockId {
+		return false, fmt.Errorf("parent block id mismatch")
+	}
+	if newBlock.ProtocolVersion != "snowman++" {
+		return false, fmt.Errorf("unsupported block protocol version %s", newBlock.ProtocolVersion)
+	}
+	trxRoot, err := CalcTrxRoot(newBlock.Trxs)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(trxRoot, newBlock.TrxRoot) {
+		return false, fmt.Errorf("trx root mismatch")
 	}
 
 	//step 3, check producer sign
@@ -185,18 +225,34 @@ func ValidGenesisBlock(genesisBlock *quorumpb.Block) (bool, error) {
 	if genesisBlock.PrevHash != nil {
 		return false, fmt.Errorf("prevhash for genesis block must be nil")
 	}
+	if genesisBlock.ProtocolVersion != "snowman++" {
+		return false, fmt.Errorf("unsupported genesis protocol version %s", genesisBlock.ProtocolVersion)
+	}
+	trxRoot, err := CalcTrxRoot(genesisBlock.Trxs)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(trxRoot, genesisBlock.TrxRoot) {
+		return false, fmt.Errorf("trx root mismatch")
+	}
 
 	genesisBlockWithoutHashAndSign := &quorumpb.Block{
-		GroupId:        genesisBlock.GroupId,
-		BlockId:        genesisBlock.BlockId,
-		Epoch:          genesisBlock.Epoch,
-		PrevHash:       genesisBlock.PrevHash,
-		ProducerPubkey: genesisBlock.ProducerPubkey,
-		Trxs:           genesisBlock.Trxs,
-		Sudo:           genesisBlock.Sudo,
-		TimeStamp:      genesisBlock.TimeStamp,
-		BlockHash:      nil,
-		ProducerSign:   nil,
+		GroupId:            genesisBlock.GroupId,
+		BlockId:            genesisBlock.BlockId,
+		Epoch:              genesisBlock.Epoch,
+		PrevHash:           genesisBlock.PrevHash,
+		ProducerPubkey:     genesisBlock.ProducerPubkey,
+		Trxs:               genesisBlock.Trxs,
+		Sudo:               genesisBlock.Sudo,
+		TimeStamp:          genesisBlock.TimeStamp,
+		BlockHash:          nil,
+		ProducerSign:       nil,
+		ParentBlockId:      genesisBlock.ParentBlockId,
+		TrxRoot:            genesisBlock.TrxRoot,
+		StateRoot:          genesisBlock.StateRoot,
+		ProducerSetVersion: genesisBlock.ProducerSetVersion,
+		ProposerIndex:      genesisBlock.ProposerIndex,
+		ProtocolVersion:    genesisBlock.ProtocolVersion,
 	}
 
 	bts, err := proto.Marshal(genesisBlockWithoutHashAndSign)
@@ -221,6 +277,26 @@ func ValidGenesisBlock(genesisBlock *quorumpb.Block) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func CalcTrxRoot(trxs []*quorumpb.Trx) ([]byte, error) {
+	if len(trxs) == 0 {
+		return localcrypto.Hash(nil), nil
+	}
+	hashes := make([]string, 0, len(trxs))
+	for _, trx := range trxs {
+		data, err := proto.Marshal(trx)
+		if err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, string(localcrypto.Hash(data)))
+	}
+	sort.Strings(hashes)
+	var payload []byte
+	for _, hash := range hashes {
+		payload = append(payload, []byte(hash)...)
+	}
+	return localcrypto.Hash(payload), nil
 }
 
 // get all trxs from the blocks list

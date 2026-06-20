@@ -16,7 +16,6 @@ import (
 	"github.com/rumsystem/quorum/internal/pkg/utils"
 	"github.com/rumsystem/quorum/pkg/consensus"
 	"github.com/rumsystem/quorum/pkg/consensus/def"
-	"github.com/rumsystem/quorum/pkg/consensus/snowman"
 	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
 	rumchaindata "github.com/rumsystem/quorum/pkg/data"
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
@@ -154,8 +153,9 @@ func (chain *Chain) HandlePsConnMessage(pkg *quorumpb.Package) error {
 		} else {
 			err = chain.HandleTrxPsConn(trx)
 		}
-	} else if pkg.Type == quorumpb.PackageType_HBB {
-		msg, msgErr := snowman.UnmarshalWireMessage(pkg.Data)
+	} else if pkg.Type == quorumpb.PackageType_SNOWMAN {
+		msg := &quorumpb.SnowmanMessage{}
+		msgErr := proto.Unmarshal(pkg.Data, msg)
 		if msgErr != nil {
 			chain_log.Warningf("<%s> invalid Snowman++ message: %s", chain.groupItem.GroupId, msgErr.Error())
 			return msgErr
