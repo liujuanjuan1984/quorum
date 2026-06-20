@@ -102,9 +102,13 @@ func (p *SnowmanProducer) ReloadValidatorSet() error {
 	if currBlock := p.cIface.GetCurrBlockId(); currBlock > 0 {
 		if lastAccepted, err := nodectx.GetNodeCtx().GetChainStorage().GetBlock(p.groupId, currBlock, false, p.nodename); err == nil {
 			engine.SetLastAccepted(lastAccepted)
+			_ = nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(lastAccepted, snowman.Accepted.String(), p.nodename)
+			_ = nodectx.GetNodeCtx().GetChainStorage().SetSnowmanLastAccepted(p.groupId, snowman.BlockID(lastAccepted), p.nodename)
 		}
 	} else if p.grpItem.GenesisBlock != nil {
 		engine.SetLastAccepted(p.grpItem.GenesisBlock)
+		_ = nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(p.grpItem.GenesisBlock, snowman.Accepted.String(), p.nodename)
+		_ = nodectx.GetNodeCtx().GetChainStorage().SetSnowmanLastAccepted(p.groupId, snowman.BlockID(p.grpItem.GenesisBlock), p.nodename)
 	}
 	p.params = params
 	p.engine = engine
@@ -115,6 +119,11 @@ func (p *SnowmanProducer) Start() {
 	if p.engine == nil || !p.engine.IsValidator(p.grpItem.UserSignPubkey) {
 		return
 	}
+	go func() {
+		if err := p.requestAcceptedFrontier(); err != nil {
+			snowmanLog.Debugf("<%s> accepted frontier request skipped: %s", p.groupId, err.Error())
+		}
+	}()
 	ticker := time.NewTicker(time.Duration(p.params.ProposerWindowMs) * time.Millisecond)
 	go func() {
 		defer ticker.Stop()
@@ -218,7 +227,7 @@ func (p *SnowmanProducer) HandleMessage(msg *quorumpb.SnowmanMessage) error {
 	case quorumpb.SnowmanMessageType_GET_ACCEPTED_FRONTIER:
 		return p.sendAcceptedFrontier(msg.RequestId)
 	case quorumpb.SnowmanMessageType_ACCEPTED_FRONTIER:
-		return nil
+		return p.handleAcceptedFrontier(msg.BlockIds)
 	case quorumpb.SnowmanMessageType_GET_ACCEPTED:
 		return p.sendAccepted(msg.RequestId, msg.BlockIds)
 	case quorumpb.SnowmanMessageType_ACCEPTED:
@@ -302,6 +311,11 @@ func (p *SnowmanProducer) AcceptBlock(block *quorumpb.Block) error {
 func (p *SnowmanProducer) RejectBlock(block *quorumpb.Block) error {
 	if block == nil {
 		return nil
+	}
+	for _, trx := range block.Trxs {
+		if trx != nil {
+			_ = p.txBuffer.Push(trx)
+		}
 	}
 	return nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(block, snowman.Rejected.String(), p.nodename)
 }
@@ -405,6 +419,28 @@ func (p *SnowmanProducer) sendAcceptedFrontier(requestID string) error {
 	return p.broadcastMessage(msg)
 }
 
+func (p *SnowmanProducer) requestAcceptedFrontier() error {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_ACCEPTED_FRONTIER, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) handleAcceptedFrontier(blockIDs []string) error {
+	for _, blockID := range blockIDs {
+		if blockID == "" {
+			continue
+		}
+		status, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockStatus(p.groupId, blockID, p.nodename)
+		if err == nil && status == snowman.Accepted.String() {
+			continue
+		}
+		return p.requestAncestorsByID(blockID)
+	}
+	return nil
+}
+
 func (p *SnowmanProducer) broadcastSnowmanBlock(block *quorumpb.Block) error {
 	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_PUT_BLOCK, "", p.grpItem.UserSignPubkey)
 	msg.BlockId = snowman.BlockID(block)
@@ -416,8 +452,12 @@ func (p *SnowmanProducer) broadcastSnowmanBlock(block *quorumpb.Block) error {
 }
 
 func (p *SnowmanProducer) requestAncestors(block *quorumpb.Block) error {
+	return p.requestAncestorsByID(snowman.ParentID(block))
+}
+
+func (p *SnowmanProducer) requestAncestorsByID(blockID string) error {
 	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_ANCESTORS, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
-	msg.BlockId = snowman.ParentID(block)
+	msg.BlockId = blockID
 	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
 	}

@@ -246,8 +246,9 @@ func (e *Engine) accept(blockID string) error {
 	e.preference = blockID
 	e.lastAccepted = blockID
 	conflicts := e.conflictingChildrenLocked(blockID)
+	rejected := []string{}
 	for _, conflictID := range conflicts {
-		e.status[conflictID] = Rejected
+		rejected = append(rejected, e.rejectSubtreeLocked(conflictID)...)
 	}
 	e.mu.Unlock()
 
@@ -255,13 +256,25 @@ func (e *Engine) accept(blockID string) error {
 		if err := e.adapter.AcceptBlock(block); err != nil {
 			return err
 		}
-		for _, conflictID := range conflicts {
-			if conflict := e.blocks[conflictID]; conflict != nil {
-				_ = e.adapter.RejectBlock(conflict)
+		for _, rejectedID := range rejected {
+			if rejectedBlock := e.blocks[rejectedID]; rejectedBlock != nil {
+				_ = e.adapter.RejectBlock(rejectedBlock)
 			}
 		}
 	}
 	return nil
+}
+
+func (e *Engine) rejectSubtreeLocked(blockID string) []string {
+	if e.status[blockID] == Rejected || e.status[blockID] == Accepted {
+		return nil
+	}
+	e.status[blockID] = Rejected
+	rejected := []string{blockID}
+	for _, childID := range e.children[blockID] {
+		rejected = append(rejected, e.rejectSubtreeLocked(childID)...)
+	}
+	return rejected
 }
 
 func (e *Engine) hasConflictLocked(blockID string) bool {

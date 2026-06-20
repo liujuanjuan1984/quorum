@@ -88,10 +88,14 @@ func TestAcceptRejectsConflictingSibling(t *testing.T) {
 	}
 	a := testBlock("group", "a", 1, []byte("parent"), []byte("block-a"))
 	b := testBlock("group", "b", 1, []byte("parent"), []byte("block-b"))
+	bChild := testBlock("group", "b", 2, []byte("block-b"), []byte("block-b-child"))
 	if err := engine.IssueBlock(a); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.IssueBlock(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.IssueBlock(bChild); err != nil {
 		t.Fatal(err)
 	}
 	poll, err := engine.NewPoll("poll-1", []string{BlockID(a), BlockID(b)})
@@ -108,6 +112,12 @@ func TestAcceptRejectsConflictingSibling(t *testing.T) {
 	}
 	if engine.Status(BlockID(b)) != Rejected {
 		t.Fatalf("expected rejected, got %s", engine.Status(BlockID(b)))
+	}
+	if engine.Status(BlockID(bChild)) != Rejected {
+		t.Fatalf("expected rejected descendant, got %s", engine.Status(BlockID(bChild)))
+	}
+	if len(adapter.rejected) != 2 {
+		t.Fatalf("expected two rejected callbacks, got %d", len(adapter.rejected))
 	}
 }
 
