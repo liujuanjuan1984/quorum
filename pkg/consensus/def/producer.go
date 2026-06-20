@@ -1,14 +1,15 @@
 package def
 
 import (
+	"github.com/rumsystem/quorum/pkg/consensus/snowman"
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
 )
 
 type Producer interface {
-	NewProducer(item *quorumpb.GroupItem, nodename string, iface ChainMolassesIface)
-	RecreateBft()
+	AddTrx(trx *quorumpb.Trx) error
 	AddBlock(block *quorumpb.Block) error
-	AddTrx(trx *quorumpb.Trx)
-	HandleHBMsg(hb *quorumpb.HBMsgv1) error
-	StartPropose()
+	HandleMessage(msg *snowman.WireMessage) error
+	ReloadValidatorSet() error
+	Start()
+	Stop()
 }

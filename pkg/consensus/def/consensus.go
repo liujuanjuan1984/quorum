@@ -6,5 +6,6 @@ type Consensus interface {
 	User() User
 	SetProducer(p Producer)
 	SetUser(u User)
-	StartPropose()
+	Start()
+	Stop()
 }

@@ -8,7 +8,9 @@ import (
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
 )
 
-// just a simple wrap of HBB Trx Buffer DB
+// TrxBuffer is the Snowman++ proposal mempool. The underlying storage method
+// names still contain HBB for database compatibility until the storage schema
+// is regenerated for the new protocol.
 type TrxBuffer struct {
 	queueId string
 }

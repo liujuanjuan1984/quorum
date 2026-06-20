@@ -50,7 +50,7 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 		//check if pubkey in producer list are unique
 		bundle := make(map[string]bool)
 
-		bftProducerBundle := &quorumpb.BFTProducerBundleItem{}
+		validatorBundle := &quorumpb.BFTProducerBundleItem{}
 		producers := []*quorumpb.ProducerItem{}
 
 		for _, producerPubkey := range params.ProducerPubkey {
@@ -102,9 +102,9 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 			producers = append(producers, item)
 		}
 
-		bftProducerBundle.Producers = producers
+		validatorBundle.Producers = producers
 
-		trxId, err := group.UpdProducer(bftProducerBundle)
+		trxId, err := group.UpdProducer(validatorBundle)
 		if err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 
 		blockGrpUserResult := &GrpProducerResult{
 			GroupId:   group.Item.GroupId,
-			Producers: bftProducerBundle.Producers,
+			Producers: validatorBundle.Producers,
 			Failable:  &failable,
 			Memo:      params.Memo, TrxId: trxId,
 		}

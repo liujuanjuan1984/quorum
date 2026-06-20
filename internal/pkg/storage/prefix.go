@@ -26,6 +26,10 @@ const (
 	ALLW_LIST_PREFIX     = "alw_list"  //allow list
 	DENY_LIST_PREFIX     = "dny_list"  //deny list
 	PRD_TRX_ID_PREFIX    = "prd_trxid" //trxid of latest trx which update group producer list
+	SNM_PREFIX           = "snm"       // snowman consensus state
+	SNM_BLK_PREFIX       = "snm_blk"   // snowman block by hash
+	SNM_STS_PREFIX       = "snm_sts"   // snowman block status by hash
+	SNM_LAST_ACCEPTED    = "snm_last"  // snowman last accepted hash
 
 	// groupinfo db
 	GROUPITEM_PREFIX = "grpitem"
@@ -74,6 +78,21 @@ func GetCachedBlockKey(groupId string, blockId uint64, prefix ...string) string 
 	epochSD := strconv.FormatUint(blockId, 10)
 	_prefix := GetCachedBlockPrefix(groupId, prefix...)
 	return _prefix + epochSD
+}
+
+func GetSnowmanBlockKey(groupId string, blockHash string, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_BLK_PREFIX + "_" + groupId + "_" + blockHash
+}
+
+func GetSnowmanBlockStatusKey(groupId string, blockHash string, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_STS_PREFIX + "_" + groupId + "_" + blockHash
+}
+
+func GetSnowmanLastAcceptedKey(groupId string, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_LAST_ACCEPTED + "_" + groupId
 }
 
 func GetGroupItemPrefix() string {

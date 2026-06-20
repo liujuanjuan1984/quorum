@@ -16,6 +16,7 @@ import (
 	"github.com/rumsystem/quorum/internal/pkg/utils"
 	"github.com/rumsystem/quorum/pkg/consensus"
 	"github.com/rumsystem/quorum/pkg/consensus/def"
+	"github.com/rumsystem/quorum/pkg/consensus/snowman"
 	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
 	rumchaindata "github.com/rumsystem/quorum/pkg/data"
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
@@ -154,13 +155,12 @@ func (chain *Chain) HandlePsConnMessage(pkg *quorumpb.Package) error {
 			err = chain.HandleTrxPsConn(trx)
 		}
 	} else if pkg.Type == quorumpb.PackageType_HBB {
-		hb := &quorumpb.HBMsgv1{}
-		err = proto.Unmarshal(pkg.Data, hb)
-		if err != nil {
-			chain_log.Warningf(err.Error())
-		} else {
-			err = chain.HandleHBPsConn(hb)
+		msg, msgErr := snowman.UnmarshalWireMessage(pkg.Data)
+		if msgErr != nil {
+			chain_log.Warningf("<%s> invalid Snowman++ message: %s", chain.groupItem.GroupId, msgErr.Error())
+			return msgErr
 		}
+		err = chain.Consensus.Producer().HandleMessage(msg)
 	} else {
 		chain_log.Warningf("<%s> unknown pkg type <%s>", chain.groupItem.GroupId, pkg.Type.String())
 	}
@@ -172,7 +172,7 @@ func (chain *Chain) HandlePsConnMessage(pkg *quorumpb.Package) error {
 func (chain *Chain) HandleTrxPsConn(trx *quorumpb.Trx) error {
 	chain_log.Debugf("<%s> HandleTrxPsConn called", chain.groupItem.GroupId)
 
-	//only producer(owner) need handle trx msg from psconn (to build trxs into block)
+	// Only active Snowman++ validators need to buffer transactions for block proposal.
 	if !chain.isProducer() {
 		return nil
 	}
@@ -209,7 +209,7 @@ func (chain *Chain) HandleTrxPsConn(trx *quorumpb.Trx) error {
 		quorumpb.TrxType_USER,
 		quorumpb.TrxType_APP_CONFIG,
 		quorumpb.TrxType_CHAIN_CONFIG:
-		chain.producerAddTrx(trx)
+		return chain.producerAddTrx(trx)
 	default:
 		chain_log.Warningf("<%s> unsupported msg type", chain.groupItem.GroupId)
 		err := errors.New("unsupported msg type")
@@ -226,65 +226,23 @@ func (chain *Chain) producerAddTrx(trx *quorumpb.Trx) error {
 		return nil
 	}
 
-	chain.Consensus.Producer().AddTrx(trx)
-	return nil
+	return chain.Consensus.Producer().AddTrx(trx)
 }
 
 // handle block msg from PSconn
 func (chain *Chain) HandleBlockPsConn(block *quorumpb.Block) error {
 	chain_log.Debugf("<%s> HandleBlockPsConn called", chain.groupItem.GroupId)
 
-	// all approved producers ignore block from psconn (they gonna build block by themselves)
-	if chain.isProducer() {
+	if !chain.isProducerByPubkey(block.ProducerPubkey) {
+		chain_log.Warningf("<%s> received block <%d> from non-validator producer <%s>, reject it", chain.groupItem.GroupId, block.Epoch, block.ProducerPubkey)
 		return nil
 	}
 
-	//check if block is from a valid group producer, currently only check if block is produced by owner
-	if !chain.isOwnerByPubkey(block.ProducerPubkey) {
-		chain_log.Warningf("<%s> received block <%d> from unknown producer, reject it", chain.groupItem.GroupId, block.Epoch, block.ProducerPubkey)
-		return nil
-	}
-
-	if nodectx.GetNodeCtx().NodeType == nodectx.PRODUCER_NODE {
-		chain_log.Debugf("<%s> producer node add block", chain.groupItem.GroupId)
-		err := chain.Consensus.Producer().AddBlock(block)
-		if err != nil {
-			chain_log.Warningf("<%s> announced producer add block error <%s>", chain.groupItem.GroupId, err.Error())
-			if err.Error() == "PARENT_NOT_EXIST" {
-				chain_log.Debugf("<%s> announced producer add block, parent not exist, blockId <%d>, currBlockId <%d>",
-					chain.groupItem.GroupId, block.BlockId, chain.GetCurrBlockId())
-			}
-		}
-		return err
-	}
-
-	//for all node run as FULLNODE
-	err := chain.Consensus.User().AddBlock(block)
+	err := chain.Consensus.Producer().AddBlock(block)
 	if err != nil {
-		chain_log.Debugf("<%s> FULLNODE add block error <%s>", chain.groupItem.GroupId, err.Error())
-		if err.Error() == "PARENT_NOT_EXIST" {
-			chain_log.Infof("<%s> block parent not exist, blockId <%s>, currBlockId <%d>",
-				chain.groupItem.GroupId, block.BlockId, chain.GetCurrBlockId())
-		}
+		chain_log.Debugf("<%s> Snowman++ issue block error <%s>", chain.groupItem.GroupId, err.Error())
 	}
-
-	return nil
-}
-
-// handle HBB msg from PsConn
-func (chain *Chain) HandleHBPsConn(hb *quorumpb.HBMsgv1) error {
-	//chain_log.Debugf("<%s> HandleHBPsConn called", chain.groupItem.GroupId)
-
-	//only producers(owner) need to handle HBB message
-	if !chain.isProducer() {
-		return nil
-	}
-
-	if chain.Consensus.Producer() == nil {
-		chain_log.Warningf("<%s> Consensus Producer is null", chain.groupItem.GroupId)
-		return nil
-	}
-	return chain.Consensus.Producer().HandleHBMsg(hb)
+	return err
 }
 
 // handler trx from rex (for sync only)
@@ -337,12 +295,6 @@ func (chain *Chain) HandleTrxRex(trx *quorumpb.Trx, s network.Stream) error {
 
 // ununsed
 func (chain *Chain) HandleBlockRex(block *quorumpb.Block, s network.Stream) error {
-	chain_log.Debugf("<%s> HandleBlockRex called", chain.groupItem.GroupId)
-	return nil
-}
-
-// unused
-func (chain *Chain) HandleHBRex(hb *quorumpb.HBMsgv1) error {
 	chain_log.Debugf("<%s> HandleBlockRex called", chain.groupItem.GroupId)
 	return nil
 }
@@ -414,22 +366,8 @@ func (chain *Chain) handleReqBlockResp(trx *quorumpb.Trx) {
 }
 
 func (chain *Chain) ApplyBlocks(blocks []*quorumpb.Block) error {
-	//PRODUCER_NODE add SYNC
-	if nodectx.GetNodeCtx().NodeType == nodectx.PRODUCER_NODE {
-		for _, block := range blocks {
-			err := chain.Consensus.Producer().AddBlock(block)
-			if err != nil {
-				chain_log.Warningf("<%s> ApplyBlocks error <%s>", chain.groupItem.GroupId, err.Error())
-				return err
-			}
-		}
-
-		return nil
-	}
-
-	//FULLNODE (include owner) Add synced Block
 	for _, block := range blocks {
-		err := chain.Consensus.User().AddBlock(block)
+		err := chain.Consensus.Producer().AddBlock(block)
 		if err != nil {
 			chain_log.Warningf("<%s> ApplyBlocks error <%s>", chain.groupItem.GroupId, err.Error())
 			return err
@@ -496,8 +434,9 @@ func (chain *Chain) updProducerConfig() {
 		return
 	}
 
-	//recreate producer BFT config
-	chain.Consensus.Producer().RecreateBft()
+	if err := chain.Consensus.Producer().ReloadValidatorSet(); err != nil {
+		chain_log.Warningf("<%s> reload Snowman++ validator set failed: %s", chain.groupItem.GroupId, err.Error())
+	}
 }
 
 func (chain *Chain) updUserList() {
@@ -550,40 +489,19 @@ func (chain *Chain) GetUsesEncryptPubKeys() ([]string, error) {
 func (chain *Chain) CreateConsensus() error {
 	chain_log.Debugf("<%s> CreateConsensus called", chain.groupItem.GroupId)
 
-	var user def.User
-	var producer def.Producer
-
-	var shouldCreateUser, shouldCreateProducer bool
-
-	if nodectx.GetNodeCtx().NodeType == nodectx.PRODUCER_NODE {
-		shouldCreateProducer = true
-		shouldCreateUser = false
-	} else if nodectx.GetNodeCtx().NodeType == nodectx.FULL_NODE {
-		//check if I am owner of the Group
-		if chain.groupItem.UserSignPubkey == chain.groupItem.OwnerPubKey {
-			shouldCreateProducer = true
-		} else {
-			shouldCreateProducer = false
-		}
-		shouldCreateUser = true
-	} else {
+	if nodectx.GetNodeCtx().NodeType != nodectx.PRODUCER_NODE && nodectx.GetNodeCtx().NodeType != nodectx.FULL_NODE {
 		return fmt.Errorf("unknow nodetype")
 	}
 
-	if shouldCreateProducer {
-		chain_log.Infof("<%s> Create and initial molasses producer", chain.groupItem.GroupId)
-		producer = &consensus.MolassesProducer{}
-		producer.NewProducer(chain.groupItem, chain.nodename, chain)
-		producer.StartPropose()
+	chain_log.Infof("<%s> Create and initial Snowman++ consensus", chain.groupItem.GroupId)
+	producer, err := consensus.NewSnowmanProducer(chain.groupItem, chain.nodename, chain)
+	if err != nil {
+		return err
 	}
+	user := consensus.NewSnowmanUser(producer)
+	producer.Start()
 
-	if shouldCreateUser {
-		chain_log.Infof("<%s> Create and initial molasses user", chain.groupItem.GroupId)
-		user = &consensus.MolassesUser{}
-		user.NewUser(chain.groupItem, chain.nodename, chain)
-	}
-
-	chain.Consensus = consensus.NewMolasses(producer, user)
+	chain.Consensus = consensus.NewSnowmanConsensus(producer, user)
 	return nil
 }
 
@@ -595,10 +513,6 @@ func (chain *Chain) isProducer() bool {
 func (chain *Chain) isProducerByPubkey(pubkey string) bool {
 	_, ok := chain.producerPool[pubkey]
 	return ok
-}
-
-func (chain *Chain) isOwnerByPubkey(pubkey string) bool {
-	return chain.groupItem.OwnerPubKey == pubkey
 }
 
 func (chain *Chain) isOwner() bool {

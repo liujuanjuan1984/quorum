@@ -1,6 +1,7 @@
 package chainstorage
 
 import (
+	"encoding/hex"
 	"errors"
 
 	rumerrors "github.com/rumsystem/quorum/internal/pkg/errors"
@@ -69,4 +70,55 @@ func (cs *Storage) GatherBlocksFromCache(block *quorumpb.Block, prefix ...string
 	}
 
 	return nil, err
+}
+
+func (cs *Storage) SaveSnowmanBlock(block *quorumpb.Block, status string, prefix ...string) error {
+	if block == nil || len(block.BlockHash) == 0 {
+		return errors.New("snowman block hash is empty")
+	}
+	blockHash := hex.EncodeToString(block.BlockHash)
+	data, err := proto.Marshal(block)
+	if err != nil {
+		return err
+	}
+	if err := cs.dbmgr.Db.Set([]byte(s.GetSnowmanBlockKey(block.GroupId, blockHash, prefix...)), data); err != nil {
+		return err
+	}
+	return cs.SetSnowmanBlockStatus(block.GroupId, blockHash, status, prefix...)
+}
+
+func (cs *Storage) GetSnowmanBlockByHash(groupId string, blockHash string, prefix ...string) (*quorumpb.Block, error) {
+	data, err := cs.dbmgr.Db.Get([]byte(s.GetSnowmanBlockKey(groupId, blockHash, prefix...)))
+	if err != nil {
+		return nil, err
+	}
+	block := &quorumpb.Block{}
+	if err := proto.Unmarshal(data, block); err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+func (cs *Storage) SetSnowmanBlockStatus(groupId string, blockHash string, status string, prefix ...string) error {
+	return cs.dbmgr.Db.Set([]byte(s.GetSnowmanBlockStatusKey(groupId, blockHash, prefix...)), []byte(status))
+}
+
+func (cs *Storage) GetSnowmanBlockStatus(groupId string, blockHash string, prefix ...string) (string, error) {
+	data, err := cs.dbmgr.Db.Get([]byte(s.GetSnowmanBlockStatusKey(groupId, blockHash, prefix...)))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func (cs *Storage) SetSnowmanLastAccepted(groupId string, blockHash string, prefix ...string) error {
+	return cs.dbmgr.Db.Set([]byte(s.GetSnowmanLastAcceptedKey(groupId, prefix...)), []byte(blockHash))
+}
+
+func (cs *Storage) GetSnowmanLastAccepted(groupId string, prefix ...string) (string, error) {
+	data, err := cs.dbmgr.Db.Get([]byte(s.GetSnowmanLastAcceptedKey(groupId, prefix...)))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }

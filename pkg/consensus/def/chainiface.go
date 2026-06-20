@@ -5,7 +5,7 @@ import (
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
 )
 
-type ChainMolassesIface interface {
+type ChainSnowmanIface interface {
 	GetTrxFactory() chaindef.TrxFactoryIface
 	SaveChainInfoToDb() error
 	ApplyTrxsFullNode(trxs []*quorumpb.Trx, nodename string) error

@@ -16,7 +16,6 @@ import (
 	"github.com/rumsystem/quorum/internal/pkg/nodectx"
 	"github.com/rumsystem/quorum/internal/pkg/utils"
 	"github.com/rumsystem/quorum/pkg/constants"
-	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
 	"github.com/rumsystem/quorum/pkg/data"
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
 	"google.golang.org/protobuf/proto"
@@ -121,16 +120,6 @@ func (connMgr *ConnMgr) UpdProducers(pubkeys []string) error {
 
 	for _, pubkey := range pubkeys {
 		connMgr.ProducerPool[pubkey] = pubkey
-	}
-
-	pk, _ := localcrypto.Libp2pPubkeyToEthBase64(connMgr.UserSignPubkey)
-	if pk == "" {
-		pk = connMgr.UserSignPubkey
-	}
-
-	if _, ok := connMgr.ProducerPool[pk]; ok {
-		conn_log.Debugf("I am producer, create producer psconn, groupId <%s>", connMgr.GroupId)
-		connMgr.getProducerPsConn()
 	}
 	return nil
 }
@@ -268,24 +257,18 @@ func (connMgr *ConnMgr) SendRespTrxRex(trx *quorumpb.Trx, s network.Stream) erro
 	return nodectx.GetNodeCtx().Node.RumExchange.PublishToStream(rummsg, s) //publish to a stream
 }
 
-func (connMgr *ConnMgr) BroadcastHBMsg(hbb *quorumpb.HBMsgv1) error {
-	pkg := &quorumpb.Package{}
-
-	pbBytes, err := proto.Marshal(hbb)
-	if err != nil {
-		return err
+func (connMgr *ConnMgr) BroadcastSnowmanMessage(data []byte) error {
+	pkg := &quorumpb.Package{
+		Type: quorumpb.PackageType_HBB,
+		Data: data,
 	}
-
-	pkg.Type = quorumpb.PackageType_HBB
-	pkg.Data = pbBytes
 
 	pkgBytes, err := proto.Marshal(pkg)
 	if err != nil {
 		return err
 	}
 
-	psconn := connMgr.getProducerPsConn()
-	return psconn.Publish(pkgBytes)
+	return connMgr.getUserConn().Publish(pkgBytes)
 }
 
 func (connMgr *ConnMgr) BroadcastBlock(blk *quorumpb.Block) error {

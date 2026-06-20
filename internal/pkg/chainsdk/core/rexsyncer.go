@@ -267,29 +267,20 @@ func (rs *RexSyncer) handleResult(result *SyncResult) error {
 		reqBlockResp.FromBlock,
 		len(reqBlockResp.Blocks.Blocks))
 
-	//Since a valid response is retrieved, finish current task
-	/*
-		only 1 producer (owner) is supported in this version
-		node should only accept BLOCK_NOT_FOUND from group owner and ignore all other BLOCK_NOT_FOUND msg
-		TBD, stop only when received BLOCK_NOT_FOUND from F + 1 producers, otherwise continue sync
-	*/
-
-	//check if resp is from owner
-	isOwner := rs.chainCtx.isOwnerByPubkey(reqBlockResp.ProviderPubkey)
+	if !rs.chainCtx.isProducerByPubkey(reqBlockResp.ProviderPubkey) {
+		chain_log.Debugf("<%s> ignore sync response from non-validator <%s>", rs.GroupId, reqBlockResp.ProviderPubkey)
+		return nil
+	}
 
 	switch reqBlockResp.Result {
 	case quorumpb.ReqBlkResult_BLOCK_NOT_FOUND:
-		if isOwner {
-			rs.CurrentDely = MAXIMUM_DELAY_DURATION
-			chain_log.Debugf("<%s> receive BLOCK_NOT_FOUND from group owner, set delay to <%d>", rs.GroupId, rs.CurrentDely)
-		}
+		rs.CurrentDely = MAXIMUM_DELAY_DURATION
+		chain_log.Debugf("<%s> receive BLOCK_NOT_FOUND from validator <%s>, set delay to <%d>", rs.GroupId, reqBlockResp.ProviderPubkey, rs.CurrentDely)
 
 	case quorumpb.ReqBlkResult_BLOCK_IN_RESP_ON_TOP:
 		rs.chainCtx.ApplyBlocks(reqBlockResp.Blocks.Blocks)
-		if isOwner {
-			rs.CurrentDely = MAXIMUM_DELAY_DURATION
-			chain_log.Debugf("<%s> receive BLOCK_IN_RESP_ON_TOP from group owner, apply blocks, set task delay to <%d>", rs.GroupId, rs.CurrentDely)
-		}
+		rs.CurrentDely = MAXIMUM_DELAY_DURATION
+		chain_log.Debugf("<%s> receive BLOCK_IN_RESP_ON_TOP from validator <%s>, apply blocks, set task delay to <%d>", rs.GroupId, reqBlockResp.ProviderPubkey, rs.CurrentDely)
 
 	case quorumpb.ReqBlkResult_BLOCK_IN_RESP:
 		rs.CurrentDely = 0
