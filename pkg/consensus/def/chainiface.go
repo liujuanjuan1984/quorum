@@ -8,8 +8,9 @@ import (
 type ChainSnowmanIface interface {
 	GetTrxFactory() chaindef.TrxFactoryIface
 	SaveChainInfoToDb() error
-	ApplyTrxsFullNode(trxs []*quorumpb.Trx, nodename string) error
-	ApplyTrxsProducerNode(trxs []*quorumpb.Trx, nodename string) error
+	ApplyTrxsFullNode(trxs []*quorumpb.Trx, acceptedBlockId uint64, nodename string) error
+	ApplyTrxsProducerNode(trxs []*quorumpb.Trx, acceptedBlockId uint64, nodename string) error
+	ApplyDueProducerUpdates(nextBlockId uint64, nodename string) (int, error)
 	SetCurrEpoch(currEpoch uint64)
 	IncCurrEpoch()
 	GetCurrEpoch() uint64

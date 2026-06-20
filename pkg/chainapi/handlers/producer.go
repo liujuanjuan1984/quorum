@@ -25,9 +25,10 @@ type GrpProducerResult struct {
 }
 
 type GrpProducerParam struct {
-	ProducerPubkey []string `from:"producer_pubkey" json:"producer_pubkey"  validate:"required" example:"CAISIQOxCH2yVZPR8t6gVvZapxcIPBwMh9jB80pDLNeuA5s8hQ=="`
-	GroupId        string   `json:"group_id" validate:"required,uuid4" example:"5ed3f9fe-81e2-450d-9146-7a329aac2b62"`
-	Memo           string   `from:"memo"            json:"memo" example:"comment/remark"`
+	ProducerPubkey   []string `from:"producer_pubkey" json:"producer_pubkey"  validate:"required" example:"CAISIQOxCH2yVZPR8t6gVvZapxcIPBwMh9jB80pDLNeuA5s8hQ=="`
+	GroupId          string   `json:"group_id" validate:"required,uuid4" example:"5ed3f9fe-81e2-450d-9146-7a329aac2b62"`
+	EffectiveBlockId uint64   `from:"effective_block_id" json:"effective_block_id" example:"2"`
+	Memo             string   `from:"memo"            json:"memo" example:"comment/remark"`
 }
 
 func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*GrpProducerResult, error) {
@@ -51,6 +52,10 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 		bundle := make(map[string]bool)
 
 		validatorBundle := &quorumpb.ValidatorBundleItem{}
+		validatorBundle.EffectiveBlockId = params.EffectiveBlockId
+		if validatorBundle.EffectiveBlockId == 0 {
+			validatorBundle.EffectiveBlockId = group.ChainCtx.GetCurrBlockId() + 2
+		}
 		producers := []*quorumpb.ProducerItem{}
 
 		for _, producerPubkey := range params.ProducerPubkey {
@@ -82,6 +87,7 @@ func GroupProducer(chainapidb def.APIHandlerIface, params *GrpProducerParam) (*G
 			item.GroupId = params.GroupId
 			item.ProducerPubkey = producerPubkey
 			item.GroupOwnerPubkey = group.Item.OwnerPubKey
+			item.EffectiveBlockId = validatorBundle.EffectiveBlockId
 
 			var buffer bytes.Buffer
 			buffer.Write([]byte(item.GroupId))

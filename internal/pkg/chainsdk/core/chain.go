@@ -389,6 +389,18 @@ func (chain *Chain) UpdConnMgrProducer() {
 	connMgr.UpdProducers(producerspubkey)
 }
 
+func (chain *Chain) ApplyDueProducerUpdates(nextBlockId uint64, nodename string) (int, error) {
+	applied, err := nodectx.GetNodeCtx().GetChainStorage().ApplyDueProducerUpdates(chain.groupItem.GroupId, nextBlockId, nodename)
+	if err != nil || applied == 0 {
+		return applied, err
+	}
+	chain.updProducerList()
+	chain.updAnnouncedProducerStatus()
+	chain.updProducerConfig()
+	chain.UpdConnMgrProducer()
+	return applied, nil
+}
+
 func (chain *Chain) updProducerList() {
 	chain_log.Debugf("<%s> UpdProducerList called", chain.groupItem.GroupId)
 	//create and load Group producer pool
@@ -541,7 +553,7 @@ func (chain *Chain) GetLastRexSyncResult() (*chaindef.RexSyncResult, error) {
 	return chain.rexSyncer.GetLastRexSyncResult()
 }
 
-func (chain *Chain) ApplyTrxsFullNode(trxs []*quorumpb.Trx, nodename string) error {
+func (chain *Chain) ApplyTrxsFullNode(trxs []*quorumpb.Trx, acceptedBlockId uint64, nodename string) error {
 	chain_log.Debugf("<%s> ApplyTrxsFullNode called", chain.groupItem.GroupId)
 	for _, trx := range trxs {
 		//check if trx already applied
@@ -590,11 +602,9 @@ func (chain *Chain) ApplyTrxsFullNode(trxs []*quorumpb.Trx, nodename string) err
 			nodectx.GetNodeCtx().GetChainStorage().AddPost(trx, nodename)
 		case quorumpb.TrxType_PRODUCER:
 			chain_log.Debugf("<%s> apply PRODUCER trx", chain.groupItem.GroupId)
-			nodectx.GetNodeCtx().GetChainStorage().UpdateProducerTrx(trx, nodename)
-			chain.updProducerList()
-			chain.updAnnouncedProducerStatus()
-			chain.updProducerConfig()
-			//chain.UpdConnMgrProducer()
+			if err := nodectx.GetNodeCtx().GetChainStorage().UpdateProducerTrx(trx, acceptedBlockId, nodename); err != nil {
+				return err
+			}
 		case quorumpb.TrxType_USER:
 			chain_log.Debugf("<%s> apply USER trx", chain.groupItem.GroupId)
 			nodectx.GetNodeCtx().GetChainStorage().UpdateUserTrx(trx, nodename)
@@ -621,7 +631,7 @@ func (chain *Chain) ApplyTrxsFullNode(trxs []*quorumpb.Trx, nodename string) err
 	return nil
 }
 
-func (chain *Chain) ApplyTrxsProducerNode(trxs []*quorumpb.Trx, nodename string) error {
+func (chain *Chain) ApplyTrxsProducerNode(trxs []*quorumpb.Trx, acceptedBlockId uint64, nodename string) error {
 	chain_log.Debugf("<%s> ApplyTrxsProducerNode called", chain.groupItem.GroupId)
 	for _, trx := range trxs {
 		//producer node does not handle APP_CONFIG and POST
@@ -662,11 +672,9 @@ func (chain *Chain) ApplyTrxsProducerNode(trxs []*quorumpb.Trx, nodename string)
 		switch trx.Type {
 		case quorumpb.TrxType_PRODUCER:
 			chain_log.Debugf("<%s> apply PRODUCER trx", chain.groupItem.GroupId)
-			nodectx.GetNodeCtx().GetChainStorage().UpdateProducerTrx(trx, nodename)
-			chain.updProducerList()
-			chain.updAnnouncedProducerStatus()
-			chain.updProducerConfig()
-			chain.UpdConnMgrProducer()
+			if err := nodectx.GetNodeCtx().GetChainStorage().UpdateProducerTrx(trx, acceptedBlockId, nodename); err != nil {
+				return err
+			}
 		case quorumpb.TrxType_USER:
 			chain_log.Debugf("<%s> apply USER trx", chain.groupItem.GroupId)
 			nodectx.GetNodeCtx().GetChainStorage().UpdateUserTrx(trx, nodename)

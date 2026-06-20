@@ -263,6 +263,15 @@ func (grp *Group) PostToGroup(content []byte) (string, error) {
 
 func (grp *Group) UpdProducer(item *quorumpb.ValidatorBundleItem) (string, error) {
 	group_log.Debugf("<%s> UpdProducer called", grp.Item.GroupId)
+	if item.EffectiveBlockId == 0 {
+		item.EffectiveBlockId = grp.ChainCtx.GetCurrBlockId() + 2
+	}
+	for _, producerItem := range item.Producers {
+		producerItem.EffectiveBlockId = item.EffectiveBlockId
+		if producerItem.GroupId == "" {
+			producerItem.GroupId = grp.Item.GroupId
+		}
+	}
 	trx, err := grp.ChainCtx.GetTrxFactory().GetRegProducerBundleTrx("", item)
 	if err != nil {
 		return "", nil

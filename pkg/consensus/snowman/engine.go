@@ -94,6 +94,12 @@ func (e *Engine) Params() Params {
 	return e.params
 }
 
+func (e *Engine) OutstandingPolls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.polls)
+}
+
 func (e *Engine) IsValidator(pubkey string) bool {
 	return e.validators.Contains(pubkey)
 }
@@ -201,6 +207,28 @@ func (e *Engine) Chits() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.preference
+}
+
+func (e *Engine) ProcessingPreference() *quorumpb.Block {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.preference == "" || e.status[e.preference] != Processing {
+		return nil
+	}
+	return e.blocks[e.preference]
+}
+
+func (e *Engine) ExpirePolls(now time.Time) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	expired := 0
+	for requestID, poll := range e.polls {
+		if now.After(poll.Deadline) {
+			delete(e.polls, requestID)
+			expired++
+		}
+	}
+	return expired
 }
 
 func (e *Engine) accept(blockID string) error {

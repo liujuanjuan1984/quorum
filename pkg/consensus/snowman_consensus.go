@@ -123,6 +123,7 @@ func (p *SnowmanProducer) Start() {
 			case <-p.stopCh:
 				return
 			case <-ticker.C:
+				p.expireAndRepoll()
 				if err := p.tryPropose(); err != nil {
 					snowmanLog.Debugf("<%s> propose skipped: %s", p.groupId, err.Error())
 				}
@@ -234,6 +235,13 @@ func (p *SnowmanProducer) VerifyBlock(block *quorumpb.Block) error {
 	if !p.engine.IsValidator(block.ProducerPubkey) {
 		return errors.New("block producer is not in active validator set")
 	}
+	producerSetVersion, err := nodectx.GetNodeCtx().GetChainStorage().GetProducerSetVersion(p.groupId, p.nodename)
+	if err != nil {
+		return err
+	}
+	if block.ProducerSetVersion != producerSetVersion {
+		return fmt.Errorf("block producer set version %d does not match active version %d", block.ProducerSetVersion, producerSetVersion)
+	}
 	parentID := block.BlockId - 1
 	parent, err := nodectx.GetNodeCtx().GetChainStorage().GetBlock(block.GroupId, parentID, false, p.nodename)
 	if err != nil {
@@ -266,10 +274,14 @@ func (p *SnowmanProducer) AcceptBlock(block *quorumpb.Block) error {
 		}
 	}
 	if nodectx.GetNodeCtx().NodeType == nodectx.PRODUCER_NODE {
-		if err := p.cIface.ApplyTrxsProducerNode(block.Trxs, p.nodename); err != nil {
+		if err := p.cIface.ApplyTrxsProducerNode(block.Trxs, block.BlockId, p.nodename); err != nil {
 			return err
 		}
-	} else if err := p.cIface.ApplyTrxsFullNode(block.Trxs, p.nodename); err != nil {
+	} else if err := p.cIface.ApplyTrxsFullNode(block.Trxs, block.BlockId, p.nodename); err != nil {
+		return err
+	}
+	appliedProducerUpdates, err := p.cIface.ApplyDueProducerUpdates(block.BlockId+1, p.nodename)
+	if err != nil {
 		return err
 	}
 	for _, trx := range block.Trxs {
@@ -278,7 +290,13 @@ func (p *SnowmanProducer) AcceptBlock(block *quorumpb.Block) error {
 	p.cIface.SetCurrBlockId(block.BlockId)
 	p.cIface.SetCurrEpoch(block.Epoch)
 	p.cIface.SetLastUpdate(block.TimeStamp)
-	return p.cIface.SaveChainInfoToDb()
+	if err := p.cIface.SaveChainInfoToDb(); err != nil {
+		return err
+	}
+	if appliedProducerUpdates > 0 {
+		return p.ReloadValidatorSet()
+	}
+	return nil
 }
 
 func (p *SnowmanProducer) RejectBlock(block *quorumpb.Block) error {
@@ -296,7 +314,11 @@ func (p *SnowmanProducer) tryPropose() error {
 	if err != nil {
 		return err
 	}
-	window := snowman.ProposerFor(parent.BlockHash, parent.BlockId+1, 0, p.engine.Validators(), time.Now(), p.params)
+	producerSetVersion, err := nodectx.GetNodeCtx().GetChainStorage().GetProducerSetVersion(p.groupId, p.nodename)
+	if err != nil {
+		return err
+	}
+	window := snowman.ProposerFor(parent.BlockHash, parent.BlockId+1, producerSetVersion, p.engine.Validators(), time.Now(), p.params)
 	if !window.Open && window.Validator != p.grpItem.UserSignPubkey {
 		return errors.New("outside local proposer window")
 	}
@@ -307,7 +329,7 @@ func (p *SnowmanProducer) tryPropose() error {
 	if len(trxs) == 0 {
 		return nil
 	}
-	block, err := rumchaindata.CreateBlockByEthKey(parent, p.cIface.GetCurrEpoch()+1, trxs, false, p.grpItem.UserSignPubkey, localcrypto.GetKeystore(), "", p.nodename)
+	block, err := rumchaindata.CreateBlockByEthKey(parent, p.cIface.GetCurrEpoch()+1, trxs, false, producerSetVersion, window.Index, p.grpItem.UserSignPubkey, localcrypto.GetKeystore(), "", p.nodename)
 	if err != nil {
 		return err
 	}
@@ -318,6 +340,23 @@ func (p *SnowmanProducer) tryPropose() error {
 		return err
 	}
 	return p.startPoll(block)
+}
+
+func (p *SnowmanProducer) expireAndRepoll() {
+	if p.engine == nil {
+		return
+	}
+	p.engine.ExpirePolls(time.Now())
+	if p.engine.OutstandingPolls() >= p.params.ConcurrentRepolls {
+		return
+	}
+	block := p.engine.ProcessingPreference()
+	if block == nil {
+		return
+	}
+	if err := p.startPoll(block); err != nil {
+		snowmanLog.Debugf("<%s> repoll skipped: %s", p.groupId, err.Error())
+	}
 }
 
 func (p *SnowmanProducer) startPoll(block *quorumpb.Block) error {

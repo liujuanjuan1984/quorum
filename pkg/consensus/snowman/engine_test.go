@@ -2,6 +2,7 @@ package snowman
 
 import (
 	"testing"
+	"time"
 
 	quorumpb "github.com/rumsystem/quorum/pkg/pb"
 )
@@ -107,6 +108,70 @@ func TestAcceptRejectsConflictingSibling(t *testing.T) {
 	}
 	if engine.Status(BlockID(b)) != Rejected {
 		t.Fatalf("expected rejected, got %s", engine.Status(BlockID(b)))
+	}
+}
+
+func TestPollRejectsInvalidAndDuplicateVotes(t *testing.T) {
+	poll := NewPoll("poll-1", []string{"a", "b"}, []string{"block-a"}, time.Second)
+	if err := poll.AddVote("a", "unknown-block"); err == nil {
+		t.Fatal("expected invalid preference to be rejected")
+	}
+	if err := poll.AddVote("not-sampled", "block-a"); err == nil {
+		t.Fatal("expected non-sampled validator vote to be rejected")
+	}
+	if err := poll.AddVote("a", "block-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := poll.AddVote("a", "block-a"); err == nil {
+		t.Fatal("expected duplicate validator vote to be rejected")
+	}
+}
+
+func TestExpirePollsClearsOutstandingPolls(t *testing.T) {
+	engine, err := NewEngine("group", "a", []string{"a", "b", "c"}, DefaultParams(3), &testAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll, err := engine.NewPoll("poll-1", []string{"block-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll.Deadline = time.Now().Add(-time.Second)
+	if expired := engine.ExpirePolls(time.Now()); expired != 1 {
+		t.Fatalf("expected one expired poll, got %d", expired)
+	}
+	if outstanding := engine.OutstandingPolls(); outstanding != 0 {
+		t.Fatalf("expected no outstanding polls, got %d", outstanding)
+	}
+}
+
+func TestFourValidatorsAcceptWithSampledQuorum(t *testing.T) {
+	adapter := &testAdapter{}
+	params := DefaultParams(4)
+	params.K = 3
+	params.AlphaPreference = 2
+	params.AlphaConfidence = 2
+	params.BetaVirtuous = 1
+	params.BetaRogue = 1
+	engine, err := NewEngine("group", "a", []string{"a", "b", "c", "d"}, params, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := testBlock("group", "a", 1, []byte("parent"), []byte("block-a"))
+	if err := engine.IssueBlock(block); err != nil {
+		t.Fatal(err)
+	}
+	poll, err := engine.NewPoll("poll-1", []string{BlockID(block)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for validator := range poll.Sampled {
+		if err := engine.RecordVote("poll-1", validator, BlockID(block)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if engine.Status(BlockID(block)) != Accepted {
+		t.Fatalf("expected accepted, got %s", engine.Status(BlockID(block)))
 	}
 }
 

@@ -1,6 +1,10 @@
 package chainstorage
 
 import (
+	"sort"
+	"strconv"
+	"strings"
+
 	s "github.com/rumsystem/quorum/internal/pkg/storage"
 	"github.com/rumsystem/quorum/internal/pkg/storage/def"
 	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
@@ -8,20 +12,108 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func (cs *Storage) UpdateProducerTrx(trx *quorumpb.Trx, prefix ...string) error {
-	err := cs.UpdateProducer(trx.GroupId, trx.Data, prefix...)
+type pendingValidatorBundle struct {
+	key              string
+	trxId            string
+	effectiveBlockId uint64
+	item             *quorumpb.ValidatorBundleItem
+}
+
+func (cs *Storage) UpdateProducerTrx(trx *quorumpb.Trx, acceptedBlockId uint64, prefix ...string) error {
+	if trx == nil {
+		return nil
+	}
+	item := &quorumpb.ValidatorBundleItem{}
+	if err := proto.Unmarshal(trx.Data, item); err != nil {
+		return err
+	}
+	if item.EffectiveBlockId == 0 || item.EffectiveBlockId <= acceptedBlockId {
+		item.EffectiveBlockId = acceptedBlockId + 1
+	}
+	for _, producerItem := range item.Producers {
+		if producerItem.GroupId == "" {
+			producerItem.GroupId = trx.GroupId
+		}
+		producerItem.EffectiveBlockId = item.EffectiveBlockId
+	}
+	data, err := proto.Marshal(item)
 	if err != nil {
 		return err
 	}
+	key := s.GetPendingValidatorBundleKey(trx.GroupId, item.EffectiveBlockId, trx.TrxId, prefix...)
+	return cs.dbmgr.Db.Set([]byte(key), data)
+}
 
-	//save trxId of latest producer update trx
-	groupInfo, err := cs.GetGroupInfo(trx.GroupId)
+func (cs *Storage) saveProducerTrxId(groupId string, trxId string, prefix ...string) error {
+	groupInfo, err := cs.GetGroupInfo(groupId)
 	if err != nil {
 		return err
 	}
 
 	key := s.GetProducerTrxIDKey(groupInfo.GroupId, prefix...)
-	return cs.dbmgr.Db.Set([]byte(key), []byte(trx.TrxId))
+	return cs.dbmgr.Db.Set([]byte(key), []byte(trxId))
+}
+
+func (cs *Storage) ApplyDueProducerUpdates(groupId string, nextBlockId uint64, prefix ...string) (int, error) {
+	bundles, err := cs.getDueProducerBundles(groupId, nextBlockId, prefix...)
+	if err != nil {
+		return 0, err
+	}
+	sort.SliceStable(bundles, func(i, j int) bool {
+		if bundles[i].effectiveBlockId == bundles[j].effectiveBlockId {
+			return bundles[i].trxId < bundles[j].trxId
+		}
+		return bundles[i].effectiveBlockId < bundles[j].effectiveBlockId
+	})
+	for _, bundle := range bundles {
+		if err := cs.UpdateProducerBundle(groupId, bundle.item, prefix...); err != nil {
+			return 0, err
+		}
+		if err := cs.SetProducerSetVersion(groupId, bundle.effectiveBlockId, prefix...); err != nil {
+			return 0, err
+		}
+		if err := cs.saveProducerTrxId(groupId, bundle.trxId, prefix...); err != nil {
+			return 0, err
+		}
+		if err := cs.dbmgr.Db.Delete([]byte(bundle.key)); err != nil {
+			return 0, err
+		}
+	}
+	return len(bundles), nil
+}
+
+func (cs *Storage) getDueProducerBundles(groupId string, nextBlockId uint64, prefix ...string) ([]pendingValidatorBundle, error) {
+	keyPrefix := s.GetPendingValidatorBundlePrefix(groupId, prefix...)
+	bundles := []pendingValidatorBundle{}
+	err := cs.dbmgr.Db.PrefixForeach([]byte(keyPrefix), func(k []byte, v []byte, err error) error {
+		if err != nil {
+			return err
+		}
+		item := &quorumpb.ValidatorBundleItem{}
+		if err := proto.Unmarshal(v, item); err != nil {
+			return err
+		}
+		if item.EffectiveBlockId > nextBlockId {
+			return nil
+		}
+		key := string(append([]byte(nil), k...))
+		bundles = append(bundles, pendingValidatorBundle{
+			key:              key,
+			trxId:            trxIdFromPendingProducerKey(key),
+			effectiveBlockId: item.EffectiveBlockId,
+			item:             item,
+		})
+		return nil
+	})
+	return bundles, err
+}
+
+func trxIdFromPendingProducerKey(key string) string {
+	parts := strings.Split(key, "_")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
 }
 
 func (cs *Storage) GetUpdProducerListTrx(groupId string, prefix ...string) (*quorumpb.Trx, error) {
@@ -46,7 +138,10 @@ func (cs *Storage) UpdateProducer(groupId string, data []byte, prefix ...string)
 	if err := proto.Unmarshal(data, item); err != nil {
 		return err
 	}
+	return cs.UpdateProducerBundle(groupId, item, prefix...)
+}
 
+func (cs *Storage) UpdateProducerBundle(groupId string, item *quorumpb.ValidatorBundleItem, prefix ...string) error {
 	groupInfo, err := cs.GetGroupInfo(groupId)
 	if err != nil {
 		return err
@@ -66,7 +161,11 @@ func (cs *Storage) UpdateProducer(groupId string, data []byte, prefix ...string)
 		}
 
 		if item.ProducerPubkey != groupInfo.OwnerPubKey {
-			pkey := key + "_" + item.ProducerPubkey
+			pk, _ := localcrypto.Libp2pPubkeyToEthBase64(item.ProducerPubkey)
+			if pk == "" {
+				pk = item.ProducerPubkey
+			}
+			pkey := s.GetProducerKey(groupId, pk, prefix...)
 			cplist = append(cplist, pkey)
 		}
 
@@ -105,6 +204,18 @@ func (cs *Storage) UpdateProducer(groupId string, data []byte, prefix ...string)
 	}
 
 	return nil
+}
+
+func (cs *Storage) SetProducerSetVersion(groupId string, version uint64, prefix ...string) error {
+	return cs.dbmgr.Db.Set([]byte(s.GetProducerSetVersionKey(groupId, prefix...)), []byte(strconv.FormatUint(version, 10)))
+}
+
+func (cs *Storage) GetProducerSetVersion(groupId string, prefix ...string) (uint64, error) {
+	data, err := cs.dbmgr.Db.Get([]byte(s.GetProducerSetVersionKey(groupId, prefix...)))
+	if err != nil || len(data) == 0 {
+		return 0, err
+	}
+	return strconv.ParseUint(string(data), 10, 64)
 }
 
 func (cs *Storage) GetAllProducerInBytes(groupId string, Prefix ...string) ([][]byte, error) {

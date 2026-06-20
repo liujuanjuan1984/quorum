@@ -30,6 +30,8 @@ const (
 	SNM_BLK_PREFIX       = "snm_blk"   // snowman block by hash
 	SNM_STS_PREFIX       = "snm_sts"   // snowman block status by hash
 	SNM_LAST_ACCEPTED    = "snm_last"  // snowman last accepted hash
+	SNM_PRD_PENDING      = "snm_prd_pending"
+	SNM_PRD_VERSION      = "snm_prd_version"
 
 	// groupinfo db
 	GROUPITEM_PREFIX = "grpitem"
@@ -93,6 +95,20 @@ func GetSnowmanBlockStatusKey(groupId string, blockHash string, prefix ...string
 func GetSnowmanLastAcceptedKey(groupId string, prefix ...string) string {
 	nodeprefix := utils.GetPrefix(prefix...)
 	return nodeprefix + SNM_PREFIX + "_" + SNM_LAST_ACCEPTED + "_" + groupId
+}
+
+func GetPendingValidatorBundlePrefix(groupId string, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_PRD_PENDING + "_" + groupId + "_"
+}
+
+func GetPendingValidatorBundleKey(groupId string, effectiveBlockId uint64, trxId string, prefix ...string) string {
+	return GetPendingValidatorBundlePrefix(groupId, prefix...) + fmt.Sprintf("%020d_%s", effectiveBlockId, trxId)
+}
+
+func GetProducerSetVersionKey(groupId string, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_PRD_VERSION + "_" + groupId
 }
 
 func GetGroupItemPrefix() string {

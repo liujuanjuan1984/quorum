@@ -16,23 +16,25 @@ import (
 	"time"
 )
 
-func CreateBlockByEthKey(parentBlk *quorumpb.Block, epoch uint64, trxs []*quorumpb.Trx, sudo bool, groupPublicKey string, keystore localcrypto.Keystore, keyalias string, opts ...string) (*quorumpb.Block, error) {
+func CreateBlockByEthKey(parentBlk *quorumpb.Block, epoch uint64, trxs []*quorumpb.Trx, sudo bool, producerSetVersion uint64, proposerIndex int, groupPublicKey string, keystore localcrypto.Keystore, keyalias string, opts ...string) (*quorumpb.Block, error) {
 	trxRoot, err := CalcTrxRoot(trxs)
 	if err != nil {
 		return nil, err
 	}
 	newBlock := &quorumpb.Block{
-		GroupId:         parentBlk.GroupId,
-		BlockId:         parentBlk.BlockId + 1,
-		Epoch:           epoch,
-		PrevHash:        parentBlk.BlockHash,
-		ProducerPubkey:  groupPublicKey,
-		Trxs:            trxs,
-		Sudo:            sudo,
-		TimeStamp:       time.Now().UnixNano(),
-		ParentBlockId:   parentBlk.BlockId,
-		TrxRoot:         trxRoot,
-		ProtocolVersion: "snowman++",
+		GroupId:            parentBlk.GroupId,
+		BlockId:            parentBlk.BlockId + 1,
+		Epoch:              epoch,
+		PrevHash:           parentBlk.BlockHash,
+		ProducerPubkey:     groupPublicKey,
+		Trxs:               trxs,
+		Sudo:               sudo,
+		TimeStamp:          time.Now().UnixNano(),
+		ParentBlockId:      parentBlk.BlockId,
+		TrxRoot:            trxRoot,
+		ProducerSetVersion: producerSetVersion,
+		ProposerIndex:      uint32(proposerIndex),
+		ProtocolVersion:    "snowman++",
 	}
 
 	tbytes, err := proto.Marshal(newBlock)
@@ -68,6 +70,7 @@ func RegenrateBlockWithParent(parentBlock *quorumpb.Block, orphanBlock *quorumpb
 	orphanBlock.BlockId = parentBlock.BlockId + 1
 	orphanBlock.ParentBlockId = parentBlock.BlockId
 	orphanBlock.ProtocolVersion = "snowman++"
+	orphanBlock.ProducerSetVersion = parentBlock.ProducerSetVersion
 	trxRoot, err := CalcTrxRoot(orphanBlock.Trxs)
 	if err != nil {
 		return nil, err

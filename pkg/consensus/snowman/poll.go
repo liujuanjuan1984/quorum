@@ -37,8 +37,20 @@ func (p *Poll) AddVote(validator, preference string) error {
 	if _, ok := p.Votes[validator]; ok {
 		return fmt.Errorf("validator %s already voted for poll %s", validator, p.RequestID)
 	}
+	if !p.hasOption(preference) {
+		return fmt.Errorf("preference %s is not an option for poll %s", preference, p.RequestID)
+	}
 	p.Votes[validator] = preference
 	return nil
+}
+
+func (p *Poll) hasOption(preference string) bool {
+	for _, option := range p.Options {
+		if option == preference {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Poll) Finished() bool {
