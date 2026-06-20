@@ -185,6 +185,57 @@ func TestFourValidatorsAcceptWithSampledQuorum(t *testing.T) {
 	}
 }
 
+func TestThreeEnginesConvergeOnOneConflictingBlock(t *testing.T) {
+	validators := []string{"a", "b", "c"}
+	params := DefaultParams(len(validators))
+	params.K = 3
+	params.AlphaPreference = 2
+	params.AlphaConfidence = 2
+	params.BetaVirtuous = 1
+	params.BetaRogue = 1
+
+	engines := map[string]*Engine{}
+	for _, validator := range validators {
+		engine, err := NewEngine("group", validator, validators, params, &testAdapter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engines[validator] = engine
+	}
+
+	a := testBlock("group", "a", 1, []byte("parent"), []byte("block-a"))
+	b := testBlock("group", "b", 1, []byte("parent"), []byte("block-b"))
+	for _, engine := range engines {
+		if err := engine.IssueBlock(a); err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.IssueBlock(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for validator, engine := range engines {
+		poll, err := engine.NewPoll("poll-"+validator, []string{BlockID(a), BlockID(b)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for sampled := range poll.Sampled {
+			if err := engine.RecordVote(poll.RequestID, sampled, engines[sampled].Chits()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	for validator, engine := range engines {
+		if engine.Status(BlockID(a)) != Accepted {
+			t.Fatalf("engine %s expected block-a accepted, got %s", validator, engine.Status(BlockID(a)))
+		}
+		if engine.Status(BlockID(b)) != Rejected {
+			t.Fatalf("engine %s expected block-b rejected, got %s", validator, engine.Status(BlockID(b)))
+		}
+	}
+}
+
 func testBlock(groupID, producer string, height uint64, parentHash []byte, hash []byte) *quorumpb.Block {
 	return &quorumpb.Block{
 		GroupId:        groupID,

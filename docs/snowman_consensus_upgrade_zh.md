@@ -228,10 +228,11 @@ Reject block 时：
 - `pkg/consensus/snowman/engine.go`
 - `pkg/consensus/snowman/poll.go`
 - `pkg/consensus/snowman/proposer.go`
-- `pkg/consensus/snowman/bootstrap.go`
 - `pkg/consensus/snowman/validator_set.go`
-- `pkg/consensus/snowman/signer.go`
-- `pkg/consensus/snowman/metrics.go`
+- `pkg/consensus/snowman/messages.go`
+- `pkg/consensus/snowman_consensus.go`
+
+其中，bootstrap 入口、accepted frontier 处理和 adapter 落库逻辑位于 `pkg/consensus/snowman_consensus.go`；消息签名与验签逻辑位于 `pkg/consensus/snowman/messages.go`。
 
 新增 protobuf：
 
@@ -275,6 +276,30 @@ Reject block 时：
 8. 改造 producer API 为 validator set API。
 9. 删除旧 HBBFT/PTBFT/RBC/ACS 编译路径。
 10. 增加多节点仿真测试。
+
+## 实施落地映射
+
+本分支已按上述方案完成 Snowman++ 替换：
+
+- 旧 Molasses/HBBFT/RBC/BBA/ACS 出块模块已从编译路径删除。
+- `pkg/pb/snowman.proto` 定义 Snowman++ 共识消息；`PackageType` 改为 `SNOWMAN`。
+- `pkg/consensus/snowman/*` 实现参数、validator set、proposer window、poll、engine、block status 与消息签名。
+- `pkg/consensus/snowman_consensus.go` 实现 producer adapter、出块、投票、accepted frontier bootstrap、ancestor 拉取、accept/reject 应用。
+- `internal/pkg/storage/chain/*` 增加 Snowman block/status/last accepted 索引，以及 pending validator bundle 和 producer set version。
+- producer update 交易通过 `EffectiveBlockId` staged，只有 accepted block 推进到对应高度后才生效。
+- block 创建与验证覆盖 `ParentBlockId`、`TrxRoot`、`ProducerSetVersion`、`ProposerIndex` 和 `ProtocolVersion=snowman++`。
+- `internal/pkg/chainsdk/core/chain.go` 不再按 owner-only 路径接受 block，Rex sync 响应也只接受 validator。
+
+已增加覆盖：
+
+- 单 validator 自动 accept。
+- 3 validator poll accept。
+- 3 engine 本地多节点冲突候选收敛。
+- 4 validator 采样 quorum accept。
+- 冲突 sibling 与 descendant reject。
+- 非采样、重复和错误 preference chits 拒绝。
+- poll timeout 清理与 repoll 支撑。
+- producer set update 按 `EffectiveBlockId` 生效。
 
 ## 完成标准
 
