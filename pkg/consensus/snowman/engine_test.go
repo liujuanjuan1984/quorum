@@ -1,6 +1,7 @@
 package snowman
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -125,6 +126,8 @@ func TestPollRejectsInvalidAndDuplicateVotes(t *testing.T) {
 	poll := NewPoll("poll-1", []string{"a", "b"}, []string{"block-a"}, time.Second)
 	if err := poll.AddVote("a", "unknown-block"); err == nil {
 		t.Fatal("expected invalid preference to be rejected")
+	} else if !errors.Is(err, ErrPreferenceNotInPoll) {
+		t.Fatalf("expected ErrPreferenceNotInPoll, got %v", err)
 	}
 	if err := poll.AddVote("not-sampled", "block-a"); err == nil {
 		t.Fatal("expected non-sampled validator vote to be rejected")
@@ -134,6 +137,30 @@ func TestPollRejectsInvalidAndDuplicateVotes(t *testing.T) {
 	}
 	if err := poll.AddVote("a", "block-a"); err == nil {
 		t.Fatal("expected duplicate validator vote to be rejected")
+	}
+}
+
+func TestPollOptionsIncludeConflictingSiblings(t *testing.T) {
+	params := DefaultParams(3)
+	engine, err := NewEngine("group", "a", []string{"a", "b", "c"}, params, &testAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testBlock("group", "a", 1, []byte("parent"), []byte("block-a"))
+	b := testBlock("group", "b", 1, []byte("parent"), []byte("block-b"))
+	if err := engine.IssueBlock(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.IssueBlock(b); err != nil {
+		t.Fatal(err)
+	}
+	options := engine.PollOptions(a)
+	found := map[string]bool{}
+	for _, option := range options {
+		found[option] = true
+	}
+	if !found[BlockID(a)] || !found[BlockID(b)] {
+		t.Fatalf("expected poll options to include both conflicting siblings, got %+v", options)
 	}
 }
 

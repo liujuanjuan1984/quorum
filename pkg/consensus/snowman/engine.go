@@ -108,7 +108,7 @@ func (e *Engine) IssueBlock(block *quorumpb.Block) error {
 	if block == nil {
 		return fmt.Errorf("block is nil")
 	}
-	if !e.validators.Contains(block.ProducerPubkey) {
+	if e.adapter == nil && !e.validators.Contains(block.ProducerPubkey) {
 		return fmt.Errorf("producer %s is not in active validator set", block.ProducerPubkey)
 	}
 	if e.adapter != nil {
@@ -140,6 +140,34 @@ func (e *Engine) IssueBlock(block *quorumpb.Block) error {
 		return e.accept(id)
 	}
 	return nil
+}
+
+func (e *Engine) PollOptions(block *quorumpb.Block) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	id := BlockID(block)
+	if id == "" {
+		return nil
+	}
+	parentID := ParentID(block)
+	seen := map[string]bool{}
+	options := []string{}
+	for _, childID := range e.children[parentID] {
+		if e.status[childID] == Processing && !seen[childID] {
+			seen[childID] = true
+			options = append(options, childID)
+		}
+	}
+	if !seen[id] {
+		options = append(options, id)
+	}
+	return options
+}
+
+func (e *Engine) KnownProcessing(blockID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.status[blockID] == Processing
 }
 
 func (e *Engine) NewPoll(requestID string, options []string) (*Poll, error) {

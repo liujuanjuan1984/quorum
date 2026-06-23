@@ -1,9 +1,12 @@
 package snowman
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+var ErrPreferenceNotInPoll = errors.New("preference is not an option for poll")
 
 type Poll struct {
 	RequestID string
@@ -38,7 +41,7 @@ func (p *Poll) AddVote(validator, preference string) error {
 		return fmt.Errorf("validator %s already voted for poll %s", validator, p.RequestID)
 	}
 	if !p.hasOption(preference) {
-		return fmt.Errorf("preference %s is not an option for poll %s", preference, p.RequestID)
+		return fmt.Errorf("%w: preference %s poll %s", ErrPreferenceNotInPoll, preference, p.RequestID)
 	}
 	p.Votes[validator] = preference
 	return nil

@@ -86,6 +86,13 @@ func TestApplyDueProducerUpdatesHonorsEffectiveBlockId(t *testing.T) {
 	if version != 4 {
 		t.Fatalf("expected producer set version 4, got %d", version)
 	}
+	snapshot, err := cs.GetProducerSetSnapshot(groupID, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot) != 2 {
+		t.Fatalf("expected producer snapshot owner plus validator, got %+v", snapshot)
+	}
 	producers, err = cs.GetProducers(groupID)
 	if err != nil {
 		t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	localcrypto "github.com/rumsystem/quorum/pkg/crypto"
+	rumchaindata "github.com/rumsystem/quorum/pkg/data"
 	"github.com/rumsystem/quorum/pkg/pb"
 )
 
@@ -129,17 +130,25 @@ func UrlToGroupSeed(seedurl string) (*GroupSeed, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("seed decode err: %s", err)
 	}
+	trxRoot, err := rumchaindata.CalcTrxRoot(nil)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	//recreate genesis block
 	genesisBlock := &pb.Block{
-		GroupId:        b64guuid.String(),
-		BlockId:        0,
-		Epoch:          0,
-		PrevHash:       nil,
-		ProducerPubkey: b64producerpubkey,
-		Trxs:           nil,
-		Sudo:           true,
-		TimeStamp:      timestamp,
+		GroupId:            b64guuid.String(),
+		BlockId:            0,
+		Epoch:              0,
+		PrevHash:           nil,
+		ProducerPubkey:     b64producerpubkey,
+		Trxs:               nil,
+		Sudo:               true,
+		TimeStamp:          timestamp,
+		TrxRoot:            trxRoot,
+		ProducerSetVersion: 0,
+		ProposerIndex:      0,
+		ProtocolVersion:    "snowman++",
 	}
 
 	bbytes, err := proto.Marshal(genesisBlock)

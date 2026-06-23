@@ -3,6 +3,7 @@ package consensus
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rumsystem/quorum/internal/pkg/conn"
@@ -68,6 +69,13 @@ type SnowmanProducer struct {
 	engine   *snowman.Engine
 	txBuffer *TrxBuffer
 	stopCh   chan struct{}
+
+	bootstrapMu        sync.Mutex
+	frontierVotes      map[string]map[string]bool
+	acceptedVotes      map[string]map[string]bool
+	acceptedConfirmed  map[string]bool
+	acceptedRequested  map[string]bool
+	ancestorsRequested map[string]bool
 }
 
 func NewSnowmanProducer(item *quorumpb.GroupItem, nodename string, iface def.ChainSnowmanIface) (*SnowmanProducer, error) {
@@ -78,6 +86,12 @@ func NewSnowmanProducer(item *quorumpb.GroupItem, nodename string, iface def.Cha
 		groupId:  item.GroupId,
 		txBuffer: NewTrxBuffer(item.GroupId),
 		stopCh:   make(chan struct{}),
+
+		frontierVotes:      map[string]map[string]bool{},
+		acceptedVotes:      map[string]map[string]bool{},
+		acceptedConfirmed:  map[string]bool{},
+		acceptedRequested:  map[string]bool{},
+		ancestorsRequested: map[string]bool{},
 	}
 	if err := p.ReloadValidatorSet(); err != nil {
 		return nil, err
@@ -92,7 +106,14 @@ func (p *SnowmanProducer) ReloadValidatorSet() error {
 	}
 	nodes := make([]string, 0, len(producers))
 	for _, producer := range producers {
-		nodes = append(nodes, producer.ProducerPubkey)
+		nodes = append(nodes, canonicalProducerPubkey(producer.ProducerPubkey))
+	}
+	producerSetVersion, err := nodectx.GetNodeCtx().GetChainStorage().GetProducerSetVersion(p.groupId, p.nodename)
+	if err != nil {
+		return err
+	}
+	if err := nodectx.GetNodeCtx().GetChainStorage().SaveCurrentProducerSetSnapshot(p.groupId, producerSetVersion, p.nodename); err != nil {
+		return err
 	}
 	params := snowman.DefaultParams(len(nodes))
 	engine, err := snowman.NewEngine(p.groupId, p.grpItem.UserSignPubkey, nodes, params, p)
@@ -116,7 +137,7 @@ func (p *SnowmanProducer) ReloadValidatorSet() error {
 }
 
 func (p *SnowmanProducer) Start() {
-	if p.engine == nil || !p.engine.IsValidator(p.grpItem.UserSignPubkey) {
+	if p.engine == nil {
 		return
 	}
 	go func() {
@@ -124,6 +145,9 @@ func (p *SnowmanProducer) Start() {
 			snowmanLog.Debugf("<%s> accepted frontier request skipped: %s", p.groupId, err.Error())
 		}
 	}()
+	if !p.isLocalValidator() {
+		return
+	}
 	ticker := time.NewTicker(time.Duration(p.params.ProposerWindowMs) * time.Millisecond)
 	go func() {
 		defer ticker.Stop()
@@ -186,7 +210,9 @@ func (p *SnowmanProducer) AddBlock(block *quorumpb.Block) error {
 		return err
 	}
 	if p.engine.Status(snowman.BlockID(block)) == snowman.Processing {
-		return p.startPoll(block)
+		if p.isLocalValidator() {
+			return p.startPoll(block)
+		}
 	}
 	return nil
 }
@@ -198,14 +224,18 @@ func (p *SnowmanProducer) HandleMessage(msg *quorumpb.SnowmanMessage) error {
 	if msg.GroupId != p.groupId {
 		return nil
 	}
-	if !p.engine.IsValidator(msg.SenderPubkey) {
-		return errors.New("snowman message sender is not an active validator")
-	}
 	if err := snowman.VerifyMessageSignature(msg); err != nil {
 		return err
 	}
+	senderIsValidator := p.engine.IsValidator(msg.SenderPubkey)
+	if !senderIsValidator && !isFollowerRequest(msg.Type) {
+		return errors.New("snowman message sender is not an active validator")
+	}
 	switch msg.Type {
 	case quorumpb.SnowmanMessageType_PUT_BLOCK:
+		if !senderIsValidator {
+			return errors.New("put block sender is not an active validator")
+		}
 		return p.AddBlock(msg.Block)
 	case quorumpb.SnowmanMessageType_GET_BLOCK:
 		return p.sendBlock(msg.RequestId, msg.BlockId)
@@ -214,24 +244,52 @@ func (p *SnowmanProducer) HandleMessage(msg *quorumpb.SnowmanMessage) error {
 	case quorumpb.SnowmanMessageType_ANCESTORS:
 		return p.handleAncestors(msg.Blocks)
 	case quorumpb.SnowmanMessageType_PUSH_QUERY:
+		if !senderIsValidator {
+			return errors.New("push query sender is not an active validator")
+		}
 		if msg.Block != nil {
 			if err := p.AddBlock(msg.Block); err != nil {
 				return err
 			}
 		}
+		if !p.isLocalValidator() {
+			return nil
+		}
 		return p.sendChits(msg.RequestId)
 	case quorumpb.SnowmanMessageType_PULL_QUERY:
+		if !senderIsValidator {
+			return errors.New("pull query sender is not an active validator")
+		}
+		if !p.isLocalValidator() {
+			return nil
+		}
 		return p.sendChits(msg.RequestId)
 	case quorumpb.SnowmanMessageType_CHITS:
-		return p.engine.RecordVote(msg.RequestId, msg.SenderPubkey, msg.PreferenceId)
+		if !senderIsValidator {
+			return errors.New("chits sender is not an active validator")
+		}
+		if err := p.engine.RecordVote(msg.RequestId, msg.SenderPubkey, msg.PreferenceId); err != nil {
+			if errors.Is(err, snowman.ErrPreferenceNotInPoll) && msg.PreferenceId != "" && !p.engine.KnownProcessing(msg.PreferenceId) {
+				_ = p.requestBlockByID(msg.PreferenceId)
+				return nil
+			}
+			return err
+		}
+		return nil
 	case quorumpb.SnowmanMessageType_GET_ACCEPTED_FRONTIER:
 		return p.sendAcceptedFrontier(msg.RequestId)
 	case quorumpb.SnowmanMessageType_ACCEPTED_FRONTIER:
-		return p.handleAcceptedFrontier(msg.BlockIds)
+		if !senderIsValidator {
+			return errors.New("accepted frontier sender is not an active validator")
+		}
+		return p.handleAcceptedFrontier(msg.SenderPubkey, msg.BlockIds)
 	case quorumpb.SnowmanMessageType_GET_ACCEPTED:
 		return p.sendAccepted(msg.RequestId, msg.BlockIds)
 	case quorumpb.SnowmanMessageType_ACCEPTED:
-		return nil
+		if !senderIsValidator {
+			return errors.New("accepted sender is not an active validator")
+		}
+		return p.handleAccepted(msg.SenderPubkey, msg.BlockIds)
 	default:
 		return nil
 	}
@@ -240,16 +298,6 @@ func (p *SnowmanProducer) HandleMessage(msg *quorumpb.SnowmanMessage) error {
 func (p *SnowmanProducer) VerifyBlock(block *quorumpb.Block) error {
 	if block == nil {
 		return errors.New("block is nil")
-	}
-	if !p.engine.IsValidator(block.ProducerPubkey) {
-		return errors.New("block producer is not in active validator set")
-	}
-	producerSetVersion, err := nodectx.GetNodeCtx().GetChainStorage().GetProducerSetVersion(p.groupId, p.nodename)
-	if err != nil {
-		return err
-	}
-	if block.ProducerSetVersion != producerSetVersion {
-		return fmt.Errorf("block producer set version %d does not match active version %d", block.ProducerSetVersion, producerSetVersion)
 	}
 	parentID := block.BlockId - 1
 	parent, err := nodectx.GetNodeCtx().GetChainStorage().GetBlock(block.GroupId, parentID, false, p.nodename)
@@ -262,6 +310,21 @@ func (p *SnowmanProducer) VerifyBlock(block *quorumpb.Block) error {
 	}
 	if !valid {
 		return errors.New("block signature or parent linkage is invalid")
+	}
+	validators, err := nodectx.GetNodeCtx().GetChainStorage().GetProducerSetSnapshot(p.groupId, block.ProducerSetVersion, p.nodename)
+	if err != nil {
+		return fmt.Errorf("producer set version %d is not available: %w", block.ProducerSetVersion, err)
+	}
+	if !producerSetContains(validators, block.ProducerPubkey) {
+		return errors.New("block producer is not in block producer set version")
+	}
+	if block.ProducerSetVersion > block.BlockId {
+		return fmt.Errorf("block producer set version %d is after block height %d", block.ProducerSetVersion, block.BlockId)
+	}
+	validatorIDs := producerPubkeys(validators)
+	window := snowman.ProposerForIndex(parent.BlockHash, block.BlockId, block.ProducerSetVersion, validatorIDs, block.ProposerIndex)
+	if !window.Open && window.Validator != block.ProducerPubkey {
+		return fmt.Errorf("block producer %s is outside proposer window for index %d", block.ProducerPubkey, window.Index)
 	}
 	return nil
 }
@@ -378,7 +441,11 @@ func (p *SnowmanProducer) startPoll(block *quorumpb.Block) error {
 		return nil
 	}
 	requestID := fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano())
-	poll, err := p.engine.NewPoll(requestID, []string{snowman.BlockID(block)})
+	options := p.engine.PollOptions(block)
+	if len(options) == 0 {
+		return errors.New("no snowman poll options")
+	}
+	poll, err := p.engine.NewPoll(requestID, options)
 	if err != nil {
 		return err
 	}
@@ -427,7 +494,7 @@ func (p *SnowmanProducer) requestAcceptedFrontier() error {
 	return p.broadcastMessage(msg)
 }
 
-func (p *SnowmanProducer) handleAcceptedFrontier(blockIDs []string) error {
+func (p *SnowmanProducer) handleAcceptedFrontier(sender string, blockIDs []string) error {
 	for _, blockID := range blockIDs {
 		if blockID == "" {
 			continue
@@ -436,7 +503,11 @@ func (p *SnowmanProducer) handleAcceptedFrontier(blockIDs []string) error {
 		if err == nil && status == snowman.Accepted.String() {
 			continue
 		}
-		return p.requestAncestorsByID(blockID)
+		if p.recordBootstrapVote(p.frontierVotes, blockID, sender) >= p.bootstrapQuorum() && !p.markAcceptedRequested(blockID) {
+			if err := p.requestAccepted([]string{blockID}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -456,7 +527,31 @@ func (p *SnowmanProducer) requestAncestors(block *quorumpb.Block) error {
 }
 
 func (p *SnowmanProducer) requestAncestorsByID(blockID string) error {
+	if blockID == "" {
+		return nil
+	}
+	if p.markAncestorsRequested(blockID) {
+		return nil
+	}
 	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_ANCESTORS, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
+	msg.BlockId = blockID
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) requestAccepted(blockIDs []string) error {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_ACCEPTED, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
+	msg.BlockIds = blockIDs
+	if err := snowman.SignMessage(msg, p.nodename); err != nil {
+		return err
+	}
+	return p.broadcastMessage(msg)
+}
+
+func (p *SnowmanProducer) requestBlockByID(blockID string) error {
+	msg := snowman.NewMessage(p.groupId, quorumpb.SnowmanMessageType_GET_BLOCK, fmt.Sprintf("%s-%d", p.grpItem.UserSignPubkey, time.Now().UnixNano()), p.grpItem.UserSignPubkey)
 	msg.BlockId = blockID
 	if err := snowman.SignMessage(msg, p.nodename); err != nil {
 		return err
@@ -479,7 +574,7 @@ func (p *SnowmanProducer) sendBlock(requestID string, blockID string) error {
 }
 
 func (p *SnowmanProducer) sendAncestors(requestID string, blockID string) error {
-	blocks := p.collectAncestors(blockID, 32)
+	blocks := p.collectAncestors(blockID, 1024)
 	if len(blocks) == 0 {
 		return nil
 	}
@@ -493,12 +588,36 @@ func (p *SnowmanProducer) sendAncestors(requestID string, blockID string) error 
 }
 
 func (p *SnowmanProducer) handleAncestors(blocks []*quorumpb.Block) error {
+	if p.hasBootstrapAccepted(blocks) {
+		return p.acceptAncestorChain(blocks)
+	}
 	for i := len(blocks) - 1; i >= 0; i-- {
 		if blocks[i] == nil {
 			continue
 		}
 		if err := p.AddBlock(blocks[i]); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (p *SnowmanProducer) handleAccepted(sender string, blockIDs []string) error {
+	for _, blockID := range blockIDs {
+		if blockID == "" {
+			continue
+		}
+		if p.recordBootstrapVote(p.acceptedVotes, blockID, sender) >= p.bootstrapQuorum() {
+			p.markAcceptedConfirmed(blockID)
+			if blocks := p.collectAncestors(blockID, 1024); len(blocks) > 0 {
+				if err := p.acceptAncestorChain(blocks); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := p.requestAncestorsByID(blockID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -542,6 +661,138 @@ func (p *SnowmanProducer) broadcastMessage(msg *quorumpb.SnowmanMessage) error {
 		return cmgr.BroadcastSnowmanMessage(msg)
 	}
 	return nil
+}
+
+func (p *SnowmanProducer) isLocalValidator() bool {
+	return p.engine != nil && p.engine.IsValidator(p.grpItem.UserSignPubkey)
+}
+
+func (p *SnowmanProducer) bootstrapQuorum() int {
+	if p.params.AlphaConfidence > 0 {
+		return p.params.AlphaConfidence
+	}
+	validators := 0
+	if p.engine != nil {
+		validators = len(p.engine.Validators())
+	}
+	return validators/2 + 1
+}
+
+func (p *SnowmanProducer) recordBootstrapVote(votes map[string]map[string]bool, blockID string, sender string) int {
+	p.bootstrapMu.Lock()
+	defer p.bootstrapMu.Unlock()
+	if votes[blockID] == nil {
+		votes[blockID] = map[string]bool{}
+	}
+	votes[blockID][sender] = true
+	return len(votes[blockID])
+}
+
+func (p *SnowmanProducer) markAcceptedRequested(blockID string) bool {
+	p.bootstrapMu.Lock()
+	defer p.bootstrapMu.Unlock()
+	if p.acceptedRequested[blockID] {
+		return true
+	}
+	p.acceptedRequested[blockID] = true
+	return false
+}
+
+func (p *SnowmanProducer) markAcceptedConfirmed(blockID string) {
+	p.bootstrapMu.Lock()
+	defer p.bootstrapMu.Unlock()
+	p.acceptedConfirmed[blockID] = true
+}
+
+func (p *SnowmanProducer) markAncestorsRequested(blockID string) bool {
+	p.bootstrapMu.Lock()
+	defer p.bootstrapMu.Unlock()
+	if p.ancestorsRequested[blockID] {
+		return true
+	}
+	p.ancestorsRequested[blockID] = true
+	return false
+}
+
+func (p *SnowmanProducer) hasBootstrapAccepted(blocks []*quorumpb.Block) bool {
+	p.bootstrapMu.Lock()
+	defer p.bootstrapMu.Unlock()
+	for _, block := range blocks {
+		if block != nil && p.acceptedConfirmed[snowman.BlockID(block)] {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *SnowmanProducer) acceptAncestorChain(blocks []*quorumpb.Block) error {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		block := blocks[i]
+		if block == nil {
+			continue
+		}
+		blockID := snowman.BlockID(block)
+		if status, err := nodectx.GetNodeCtx().GetChainStorage().GetSnowmanBlockStatus(block.GroupId, blockID, p.nodename); err == nil && status == snowman.Accepted.String() {
+			continue
+		}
+		if block.BlockId > 0 {
+			parentExists, err := nodectx.GetNodeCtx().GetChainStorage().IsBlockExist(block.GroupId, block.ParentBlockId, false, p.nodename)
+			if err != nil || !parentExists {
+				_ = nodectx.GetNodeCtx().GetChainStorage().SaveSnowmanBlock(block, snowman.Processing.String(), p.nodename)
+				return p.requestAncestorsByID(snowman.ParentID(block))
+			}
+			if err := p.VerifyBlock(block); err != nil {
+				return err
+			}
+		}
+		p.engine.SetLastAccepted(block)
+		if err := p.AcceptBlock(block); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isFollowerRequest(typ quorumpb.SnowmanMessageType) bool {
+	switch typ {
+	case quorumpb.SnowmanMessageType_GET_BLOCK,
+		quorumpb.SnowmanMessageType_GET_ANCESTORS,
+		quorumpb.SnowmanMessageType_GET_ACCEPTED_FRONTIER,
+		quorumpb.SnowmanMessageType_GET_ACCEPTED:
+		return true
+	default:
+		return false
+	}
+}
+
+func producerPubkeys(producers []*quorumpb.ProducerItem) []string {
+	pubkeys := make([]string, 0, len(producers))
+	for _, producer := range producers {
+		if producer != nil && producer.ProducerPubkey != "" {
+			pubkeys = append(pubkeys, canonicalProducerPubkey(producer.ProducerPubkey))
+		}
+	}
+	return pubkeys
+}
+
+func producerSetContains(producers []*quorumpb.ProducerItem, pubkey string) bool {
+	canonicalPubkey := canonicalProducerPubkey(pubkey)
+	for _, producer := range producers {
+		if producer == nil {
+			continue
+		}
+		if canonicalProducerPubkey(producer.ProducerPubkey) == canonicalPubkey {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalProducerPubkey(pubkey string) string {
+	if converted, err := localcrypto.Libp2pPubkeyToEthBase64(pubkey); err == nil && converted != "" {
+		return converted
+	}
+	return pubkey
 }
 
 type SnowmanUser struct {

@@ -28,6 +28,17 @@ func ProposerFor(parentHash []byte, height uint64, producerSetVersion uint64, va
 	return ProposerWindow{Validator: order[window], Index: window}
 }
 
+func ProposerForIndex(parentHash []byte, height uint64, producerSetVersion uint64, validators []string, index uint32) ProposerWindow {
+	if len(validators) == 0 {
+		return ProposerWindow{Open: true, Index: int(index)}
+	}
+	order := proposerOrder(parentHash, height, producerSetVersion, validators)
+	if int(index) >= len(order) {
+		return ProposerWindow{Open: true, Index: int(index)}
+	}
+	return ProposerWindow{Validator: order[index], Index: int(index)}
+}
+
 func proposerOrder(parentHash []byte, height uint64, producerSetVersion uint64, validators []string) []string {
 	order := make([]string, 0, len(validators))
 	order = append(order, validators...)

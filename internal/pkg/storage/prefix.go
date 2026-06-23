@@ -32,6 +32,7 @@ const (
 	SNM_LAST_ACCEPTED    = "snm_last"  // snowman last accepted hash
 	SNM_PRD_PENDING      = "snm_prd_pending"
 	SNM_PRD_VERSION      = "snm_prd_version"
+	SNM_PRD_SNAPSHOT     = "snm_prd_snapshot"
 
 	// groupinfo db
 	GROUPITEM_PREFIX = "grpitem"
@@ -109,6 +110,11 @@ func GetPendingValidatorBundleKey(groupId string, effectiveBlockId uint64, trxId
 func GetProducerSetVersionKey(groupId string, prefix ...string) string {
 	nodeprefix := utils.GetPrefix(prefix...)
 	return nodeprefix + SNM_PREFIX + "_" + SNM_PRD_VERSION + "_" + groupId
+}
+
+func GetProducerSetSnapshotKey(groupId string, version uint64, prefix ...string) string {
+	nodeprefix := utils.GetPrefix(prefix...)
+	return nodeprefix + SNM_PREFIX + "_" + SNM_PRD_SNAPSHOT + "_" + groupId + "_" + fmt.Sprintf("%020d", version)
 }
 
 func GetGroupItemPrefix() string {

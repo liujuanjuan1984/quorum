@@ -69,6 +69,9 @@ func (cs *Storage) ApplyDueProducerUpdates(groupId string, nextBlockId uint64, p
 		if err := cs.UpdateProducerBundle(groupId, bundle.item, prefix...); err != nil {
 			return 0, err
 		}
+		if err := cs.SaveCurrentProducerSetSnapshot(groupId, bundle.effectiveBlockId, prefix...); err != nil {
+			return 0, err
+		}
 		if err := cs.SetProducerSetVersion(groupId, bundle.effectiveBlockId, prefix...); err != nil {
 			return 0, err
 		}
@@ -213,9 +216,41 @@ func (cs *Storage) SetProducerSetVersion(groupId string, version uint64, prefix 
 func (cs *Storage) GetProducerSetVersion(groupId string, prefix ...string) (uint64, error) {
 	data, err := cs.dbmgr.Db.Get([]byte(s.GetProducerSetVersionKey(groupId, prefix...)))
 	if err != nil || len(data) == 0 {
-		return 0, err
+		return 0, nil
 	}
 	return strconv.ParseUint(string(data), 10, 64)
+}
+
+func (cs *Storage) SaveProducerSetSnapshot(groupId string, version uint64, producers []*quorumpb.ProducerItem, prefix ...string) error {
+	item := &quorumpb.ValidatorBundleItem{
+		EffectiveBlockId: version,
+		Producers:        producers,
+	}
+	data, err := proto.Marshal(item)
+	if err != nil {
+		return err
+	}
+	return cs.dbmgr.Db.Set([]byte(s.GetProducerSetSnapshotKey(groupId, version, prefix...)), data)
+}
+
+func (cs *Storage) SaveCurrentProducerSetSnapshot(groupId string, version uint64, prefix ...string) error {
+	producers, err := cs.GetProducers(groupId, prefix...)
+	if err != nil {
+		return err
+	}
+	return cs.SaveProducerSetSnapshot(groupId, version, producers, prefix...)
+}
+
+func (cs *Storage) GetProducerSetSnapshot(groupId string, version uint64, prefix ...string) ([]*quorumpb.ProducerItem, error) {
+	data, err := cs.dbmgr.Db.Get([]byte(s.GetProducerSetSnapshotKey(groupId, version, prefix...)))
+	if err != nil {
+		return nil, err
+	}
+	item := &quorumpb.ValidatorBundleItem{}
+	if err := proto.Unmarshal(data, item); err != nil {
+		return nil, err
+	}
+	return item.Producers, nil
 }
 
 func (cs *Storage) GetAllProducerInBytes(groupId string, Prefix ...string) ([][]byte, error) {
@@ -246,7 +281,13 @@ func (cs *Storage) AddProducer(item *quorumpb.ProducerItem, prefix ...string) er
 	if err != nil {
 		return err
 	}
-	return cs.dbmgr.Db.Set([]byte(key), pbyte)
+	if err := cs.dbmgr.Db.Set([]byte(key), pbyte); err != nil {
+		return err
+	}
+	if err := cs.SetProducerSetVersion(item.GroupId, 0, prefix...); err != nil {
+		return err
+	}
+	return cs.SaveCurrentProducerSetSnapshot(item.GroupId, 0, prefix...)
 }
 
 func (cs *Storage) GetAnnouncedProducer(groupId string, pubkey string, prefix ...string) (*quorumpb.AnnounceItem, error) {
